@@ -90,10 +90,10 @@ Die gesamte MQTT-Konfiguration erfolgt ueber Umgebungsvariablen. **Alle Variable
 | `MQTT_PORT` | Port des MQTT-Brokers | `1883` |
 | `MQTT_CLIENTID` | Client-ID fuer die MQTT-Verbindung | `airsensor` |
 | `MQTT_TOPIC` | MQTT-Topic, auf das die Messwerte publiziert werden | `home/CO2/voc` |
-| `MQTT_USERNAME` | Benutzername fuer MQTT-Authentifizierung (optional, aber muss gesetzt sein) | `mqttuser` |
-| `MQTT_PASSWORD` | Passwort fuer MQTT-Authentifizierung (optional, aber muss gesetzt sein) | `mqttpass` |
-
-> **Hinweis:** Auch `MQTT_USERNAME` und `MQTT_PASSWORD` muessen als Umgebungsvariable vorhanden sein. Falls keine Authentifizierung noetig ist, koennen sie leer gesetzt werden (`MQTT_USERNAME=""` `MQTT_PASSWORD=""`).
+| `MQTT_USERNAME` | Benutzername fuer MQTT-Authentifizierung (optional) | `mqttuser` |
+| `MQTT_PASSWORD` | Passwort fuer MQTT-Authentifizierung (optional) | `mqttpass` |
+| `HA_DISCOVERY_PREFIX` | Praefix fuer Home Assistant Auto-Discovery (Standard: `homeassistant`) | `homeassistant` |
+| `HA_DEVICE_NAME` | Geraetenamen im Home Assistant (Standard: `Air Sensor`) | `Wohnzimmer Sensor` |
 
 ## Benutzung
 
@@ -156,6 +156,8 @@ services:
       MQTT_TOPIC: "home/CO2/voc"
       MQTT_USERNAME: ""
       MQTT_PASSWORD: ""
+      HA_DISCOVERY_PREFIX: "homeassistant"
+      HA_DEVICE_NAME: "Air Sensor"
 ```
 
 > **Hinweis:** Der Container benoetigt Zugriff auf den USB-Bus (`/dev/bus/usb`). Alternativ kann auch nur das spezifische USB-Geraet durchgereicht werden, z.B. `/dev/bus/usb/001/005`.
@@ -212,7 +214,53 @@ Im Dauerbetrieb wird alle **30 Sekunden** ein neuer Messwert gelesen und publizi
 
 ### Home Assistant
 
-MQTT-Sensor in der `configuration.yaml`:
+#### Auto-Discovery (empfohlen)
+
+Der Sensor unterstuetzt **MQTT Auto-Discovery** fuer Home Assistant. Beim Start wird automatisch eine Konfigurationsnachricht auf das Discovery-Topic publiziert, sodass Home Assistant den Sensor ohne manuelle Konfiguration erkennt und einbindet.
+
+Das Discovery-Topic hat das Format:
+
+```
+{HA_DISCOVERY_PREFIX}/sensor/{MQTT_CLIENTID}/config
+```
+
+**Beispiel** mit Standardwerten:
+
+```
+homeassistant/sensor/airsensor/config
+```
+
+Die publizierte JSON-Konfiguration enthaelt:
+
+```json
+{
+  "name": "Air Sensor VOC",
+  "state_topic": "home/CO2/voc",
+  "unit_of_measurement": "ppm",
+  "device_class": "volatile_organic_compounds_parts",
+  "unique_id": "airsensor_voc",
+  "device": {
+    "identifiers": ["airsensor"],
+    "name": "Air Sensor",
+    "model": "USB VOC Sensor",
+    "manufacturer": "Atmel"
+  }
+}
+```
+
+Der Geraetenamen und das Discovery-Praefix koennen ueber Umgebungsvariablen angepasst werden:
+
+```bash
+docker run --rm --device=/dev/bus/usb \
+  -e MQTT_BROKERNAME=192.168.1.10 \
+  -e MQTT_TOPIC=home/CO2/voc \
+  -e HA_DEVICE_NAME="Wohnzimmer Sensor" \
+  volschin/airsensor
+```
+
+#### Manuelle Konfiguration
+
+Falls Auto-Discovery deaktiviert ist oder ein anderes Praefix verwendet wird, kann der Sensor manuell in der `configuration.yaml` eingetragen werden:
 
 ```yaml
 mqtt:
