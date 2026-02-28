@@ -4,7 +4,7 @@
 
 **airsensor-mqtt** is a Linux USB device driver and MQTT publisher written in C. It reads VOC (Volatile Organic Compound) air quality measurements from a USB air sensor (Atmel 0x03eb:0x2013 — sold under brands like Conrad and REHAU) and publishes the readings to an MQTT broker for home automation integration.
 
-- **Language**: C (single-file application, ~330 lines)
+- **Language**: C (single-file application, ~340 lines)
 - **License**: MIT
 - **Primary deployment**: Docker container (multi-arch: amd64, arm/v7, arm64)
 - **Maintainer**: Veit Olschinski (volschin@googlemail.com)
@@ -17,16 +17,20 @@
 
 ```
 airsensor-mqtt/
-├── airsensor.c                        # Entire application (~330 lines)
+├── airsensor.c                        # Entire application (~340 lines)
+├── Makefile                           # Build and test targets
 ├── Dockerfile                         # Multi-stage build (builder + scratch runtime)
 ├── .pre-commit-config.yaml            # Git hooks: gitleaks, cpplint, whitespace
 ├── .gitignore                         # Standard C build artifacts
 ├── LICENSE                            # MIT License
-├── README.md                          # Minimal description (German)
+├── README.md                          # Full usage documentation (German)
+├── tests/
+│   └── test_airsensor.c               # Unit tests (no hardware required)
 └── .github/
     ├── renovate.json5                 # Renovate dependency update bot config
     └── workflows/
         ├── docker-image.yml           # Docker Hub CI/CD (multi-arch builds)
+        ├── test.yml                   # Unit test CI (runs on ubuntu-latest)
         └── dependency-review.yml      # Vulnerability scanning on PRs
 ```
 
@@ -41,7 +45,7 @@ docker build -t airsensor-mqtt .
 ```
 
 The Dockerfile uses a two-stage build:
-1. **builder** — `gcc:14.3` (pinned by digest) with `libusb-dev` and `libpaho-mqtt-dev` installed
+1. **builder** — `gcc:15.2` (pinned by digest) with `libusb-dev` and `libpaho-mqtt-dev` installed
 2. **runtime** — `scratch` image with only the statically linked binary
 
 The default Docker entrypoint runs with the `-v` flag (VOC-only output mode):
@@ -54,7 +58,19 @@ Compilation command (inside builder stage):
 gcc -static -o airsensor airsensor.c -lusb -lpaho-mqtt3c -lpthread
 ```
 
-### Local build (requires libusb-dev and libpaho-mqtt-dev)
+### Local build via Makefile
+
+```bash
+make          # builds ./airsensor
+make test     # builds and runs unit tests
+make clean    # removes built binaries
+```
+
+The Makefile compiles with `-Wall -Wextra -std=c11`. The test binary does **not** require libusb or libpaho-mqtt.
+
+### Local build (manual)
+
+Requires `libusb-dev` and `libpaho-mqtt-dev`:
 
 ```bash
 gcc -o airsensor airsensor.c -lusb -lpaho-mqtt3c -lpthread
@@ -73,7 +89,7 @@ Note: The Dockerfile uses `-static` for a self-contained binary; omit for local 
 | Flag | Description |
 |------|-------------|
 | `-d` | Enable debug/verbose output |
-| `-v` | Print VOC value only (filters values outside 450–2000 ppm) |
+| `-v` | Print VOC value only (prints `0` for values outside 450–15001 ppm) |
 | `-o` | One-shot: read once and exit |
 | `-h` | Print help and exit |
 
@@ -91,23 +107,18 @@ docker run --rm --device=/dev/bus/usb \
 
 ## Environment Variables
 
-All MQTT configuration is done via environment variables. **All variables are required at
-runtime** — if any are missing, `getenv()` returns `NULL` and the program will segfault during
-the `strcat` address assembly. There is no fallback to the initialized defaults in the code
-(see `airsensor.c:90–103`).
+All MQTT configuration is done via environment variables. The code uses null-checked `getenv()` with compiled-in defaults (see `airsensor.c:92–99`), so missing variables fall back to the defaults listed below rather than segfaulting.
 
-| Variable | Intended Default | Description |
-|----------|-----------------|-------------|
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `MQTT_BROKERNAME` | `127.0.0.1` | MQTT broker hostname or IP |
 | `MQTT_PORT` | `1883` | MQTT broker port |
 | `MQTT_CLIENTID` | `airsensor` | MQTT client identifier |
 | `MQTT_TOPIC` | `home/CO2/voc` | Topic to publish readings |
-| `MQTT_USERNAME` | _(empty)_ | Optional authentication username |
-| `MQTT_PASSWORD` | _(empty)_ | Optional authentication password |
+| `MQTT_USERNAME` | _(none)_ | Optional authentication username |
+| `MQTT_PASSWORD` | _(none)_ | Optional authentication password |
 
-> **Known bug**: The default values assigned on lines 90–101 are immediately overwritten by
-> `getenv()`. If any required env var is unset, the program segfaults. `MQTT_USERNAME` and
-> `MQTT_PASSWORD` are also fetched redundantly (lines 102–103 and again on lines 113–114).
+`MQTT_USERNAME` and `MQTT_PASSWORD` are passed directly to `conn_opts` via `getenv()` (lines 111–112); they return `NULL` if unset, which the Paho library treats as "no authentication".
 
 ---
 
@@ -115,17 +126,17 @@ the `strcat` address assembly. There is no fallback to the initialized defaults 
 
 ### Actual startup sequence (as coded)
 
-1. Read all environment variables and construct the MQTT broker address (`tcp://host:port`)
-2. Create and connect the MQTT client — **exits with `EXIT_FAILURE` if connection fails**
-3. Parse command-line flags (`-d`, `-v`, `-o`, `-h`)
+1. Read environment variables and construct the MQTT broker address (`tcp://host:port`) via `snprintf` (`airsensor.c:100–101`)
+2. Create and connect the MQTT client — **exits with `EXIT_FAILURE` if connection fails** (`airsensor.c:107–117`)
+3. Parse command-line flags (`-d`, `-v`, `-o`, `-h`) (`airsensor.c:135–158`)
 4. Initialize libusb (`usb_init()`)
 5. Poll for USB device (vendor `0x03eb`, product `0x2013`) — up to 10 retries × 11 seconds ≈ 110 seconds
 6. Open device, detach any kernel driver, claim USB interface 0
-7. Register `SIGTERM` handler (`release_usb_device()`) for clean shutdown
+7. Register `SIGTERM` and `SIGINT` handlers (`release_usb_device()`) for clean shutdown
 8. Flush any pending USB data with an initial interrupt read on endpoint `0x81`
 
-> Note: MQTT connects **before** the USB device is found. If the USB device is never found,
-> the MQTT connection is never explicitly closed before `exit(1)`.
+> Note: MQTT connects **before** the USB device is found. If the USB device is never found or
+> fails to open, the MQTT connection is explicitly disconnected and destroyed before `exit(1)`.
 
 ### Main read loop — `while(rc == MQTTCLIENT_SUCCESS)`
 
@@ -133,7 +144,7 @@ the `strcat` address assembly. There is no fallback to the initialized defaults 
    `\x40\x68\x2a\x54\x52\x0a\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40`
 2. Read 16-byte response from interrupt endpoint `0x81`
 3. If read returns 0 bytes, sleep 1 second and retry the read once
-4. Extract VOC value: copy 2 bytes from `buf+2`, convert little-endian to host order via `__le16_to_cpu()`
+4. Extract VOC value: copy 2 bytes from `buf+2`, convert little-endian to host order via `le16toh()` (from `<endian.h>`)
 5. Sleep 1 second, then do a flush read on endpoint `0x81`
 6. Validate range: 450–15001 ppm
 7. If valid: publish to MQTT topic as ASCII string; wait for delivery confirmation
@@ -141,16 +152,42 @@ the `strcat` address assembly. There is no fallback to the initialized defaults 
 9. Sleep 30 seconds before next cycle
 10. Loop exits if `MQTTClient_waitForCompletion()` returns non-success
 
-### Shutdown (SIGTERM only)
+### Shutdown
 
-The `release_usb_device()` signal handler at `airsensor.c:64` cleanly:
+The `release_usb_device()` signal handler at `airsensor.c:66` handles both `SIGTERM` and `SIGINT`. It cleanly:
 - Releases USB interface (`usb_release_interface`)
 - Closes USB device handle (`usb_close`)
 - Disconnects and destroys the MQTT client (`MQTTClient_disconnect`, `MQTTClient_destroy`)
 - Exits with the USB release return code
 
-> **Note**: Only `SIGTERM` is handled. `SIGINT` (Ctrl+C) is **not** caught, so Ctrl+C during
-> interactive use will leave USB resources unreleased.
+---
+
+## Testing
+
+### Unit tests (`tests/test_airsensor.c`)
+
+The test file replicates the self-contained logic from `airsensor.c` without requiring USB hardware or an MQTT broker. It uses a minimal custom test runner (no external framework).
+
+**Test suites:**
+
+| Suite | What it tests |
+|-------|--------------|
+| VOC range validation | Boundary values (449/450, 15001/15002), typical values, edge cases |
+| VOC buffer parsing | Little-endian extraction of bytes 2–3 from the 16-byte USB response |
+| MQTT address assembly | `tcp://host:port` string construction |
+| `svoc` buffer size | Documents and verifies the known buffer-size issue for 5-digit values |
+
+**Run tests:**
+```bash
+make test
+# or manually:
+gcc -Wall -Wextra -o tests/test_airsensor tests/test_airsensor.c
+./tests/test_airsensor
+```
+
+Tests exit with code `0` on full pass, `1` if any test fails.
+
+> **No hardware tests exist.** Verification of actual USB communication and MQTT publishing requires a real sensor device.
 
 ---
 
@@ -160,15 +197,16 @@ The `release_usb_device()` signal handler at `airsensor.c:64` cleanly:
 
 - **Variables**: snake_case (`print_voc_only`, `one_read`, `iresult`)
 - **Macros**: UPPERCASE (`QOS`, `TIMEOUT`)
-- **No dynamic allocation**: only static/stack buffers (`char buf[1000]`, `char svoc[5]`)
-- Logging via `printout()` (`airsensor.c:51`) with format: `YYYY-MM-DD HH:MM:SS, [label] [value]`
+- **No dynamic allocation**: only static/stack buffers (`char buf[1000]`, `char svoc[6]`)
+- Logging via `printout()` (`airsensor.c:52`) with format: `YYYY-MM-DD HH:MM:SS, [label] [value]`
 - Raw `printf()` used directly in the main loop for VOC output lines
 
 ### Error handling
 
 - USB operations check return codes; failures print an error or trigger retry/exit
 - MQTT connection failure exits with `EXIT_FAILURE`
-- Device not found after ~110 seconds exits with code 1
+- Device not found after ~110 seconds: disconnects MQTT, then exits with code 1
+- USB open failure: disconnects MQTT, then exits with code 1
 - Data range validation (450–15001) suppresses out-of-range reads silently (prints `0` in `-v` mode)
 - If `ret == 0` from USB read, a single retry is attempted; no further retry logic
 
@@ -197,24 +235,15 @@ Uses the **Paho MQTT C client** synchronous API (`MQTTClient`, not `MQTTAsync`):
 
 These are pre-existing issues in the codebase. Do not silently fix them without discussion.
 
-1. **`svoc[5]` buffer too small** (`airsensor.c:298`): The buffer for formatting the VOC value as
-   a string is only 5 bytes. Values ≥ 10000 (5 digits) require 6 bytes including the null
-   terminator. Since `max_valid` is 15001, this is a latent buffer overflow.
-
-2. **Environment variable null pointer** (`airsensor.c:90–101`): Default values are overwritten
-   by `getenv()` without null-checking. Any missing required env var causes a segfault.
-
-3. **`command[2048]` declared but never used** (`airsensor.c:127`): Dead variable, presumably
+1. **`command[2048]` declared but never used** (`airsensor.c:125`): Dead variable, presumably
    a leftover from an earlier version.
 
-4. **`MQTT_USERNAME`/`MQTT_PASSWORD` fetched twice** (`airsensor.c:102–103`, `113–114`): `getenv`
-   is called redundantly; the `username`/`password` local variables declared at lines 102–103 are
-   never actually used in the connection options.
-
-5. **SIGINT not handled**: Only `SIGTERM` is registered, so Ctrl+C exits without cleanup.
-
-6. **MQTT not closed on USB timeout exit** (`airsensor.c:192`): If the USB device is never found,
-   `exit(1)` is called without disconnecting the MQTT client.
+> **Previously documented issues that have since been fixed:**
+> - ~~`svoc[5]` buffer too small~~: Fixed — now `svoc[6]` with `snprintf` (`airsensor.c:308–310`)
+> - ~~Environment variable null pointer~~: Fixed — all `getenv()` calls now have null-checked fallback defaults (`airsensor.c:92–99`)
+> - ~~`MQTT_USERNAME`/`MQTT_PASSWORD` fetched twice~~: Fixed — now set directly on `conn_opts` once (`airsensor.c:111–112`)
+> - ~~SIGINT not handled~~: Fixed — both `SIGTERM` and `SIGINT` are registered (`airsensor.c:210–211`)
+> - ~~MQTT not closed on USB timeout exit~~: Fixed — MQTT is disconnected and destroyed before all `exit()` calls in the USB setup path
 
 ---
 
@@ -245,6 +274,12 @@ pre-commit run --all-files
 ---
 
 ## CI/CD
+
+### Unit test workflow (`.github/workflows/test.yml`)
+
+- **Triggers**: push to `main` or any PR when `airsensor.c`, `tests/**`, or `Makefile` change
+- **Runs**: `make test` on `ubuntu-latest`
+- **Uses**: `step-security/harden-runner` + pinned `actions/checkout`
 
 ### Docker image workflow (`.github/workflows/docker-image.yml`)
 
@@ -309,12 +344,14 @@ max_wait         = ~110 seconds
 ## Making Changes
 
 1. `airsensor.c` is the **only source file** — all logic lives here
-2. There are **no unit tests or integration tests**; verification requires a real USB device
-3. Test compilation with Docker: `docker build -t airsensor-mqtt .`
-4. For local builds: ensure `libusb-dev` and `libpaho-mqtt-dev` are installed
-5. Ensure pre-commit hooks pass: `pre-commit run --all-files`
-6. Commit and push to trigger Docker Hub CI (only fires on changes to `Dockerfile` or `airsensor.c`)
-7. Tag a release (`git tag vX.Y.Z && git push --tags`) to trigger a versioned Docker Hub push
+2. Unit tests live in `tests/test_airsensor.c` and test pure logic only (no hardware required)
+3. Run tests: `make test`
+4. Test full compilation with Docker: `docker build -t airsensor-mqtt .`
+5. For local builds: ensure `libusb-dev` and `libpaho-mqtt-dev` are installed
+6. Ensure pre-commit hooks pass: `pre-commit run --all-files`
+7. Commit and push to trigger CI (unit tests fire on `airsensor.c`/`tests/`/`Makefile` changes;
+   Docker build fires on `Dockerfile`/`airsensor.c` changes)
+8. Tag a release (`git tag vX.Y.Z && git push --tags`) to trigger a versioned Docker Hub push
 
 ---
 
