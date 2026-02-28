@@ -24,7 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <usb.h>
-#include <asm/byteorder.h>
+#include <endian.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -51,7 +51,8 @@ void help() {
 void printout(char *str, int value) {
 
 	time_t t = time(NULL);
-	struct tm tm = *localtime(&t);
+	struct tm tm;
+	localtime_r(&t, &tm);
 
 	printf("%04d-%02d-%02d %02d:%02d:%02d, ", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
 	if (value == 0) {
@@ -87,20 +88,16 @@ struct usb_device* find_device(int vendor, int product) {
 
 int main(int argc, char *argv[])
 {
-    char *brokername = "127.0.0.1";
-    brokername = getenv("MQTT_BROKERNAME");
-    char *portnumber = "1883";
-    portnumber = getenv("MQTT_PORT");
-    char address[80] = "tcp://";
-    strcat (address, brokername);
-    strcat (address, ":");
-    strcat (address, portnumber);
-    char *clientid = "airsensor" ;
-    clientid = getenv("MQTT_CLIENTID");
-    char *topicname = "home/CO2/voc";
-    topicname = getenv("MQTT_TOPIC");
-	const char *username = getenv("MQTT_USERNAME");
-	const char *password = getenv("MQTT_PASSWORD");
+    const char *brokername = getenv("MQTT_BROKERNAME");
+    if (!brokername) brokername = "127.0.0.1";
+    const char *portnumber = getenv("MQTT_PORT");
+    if (!portnumber) portnumber = "1883";
+    const char *clientid = getenv("MQTT_CLIENTID");
+    if (!clientid) clientid = "airsensor";
+    const char *topicname = getenv("MQTT_TOPIC");
+    if (!topicname) topicname = "home/CO2/voc";
+    char address[256];
+    snprintf(address, sizeof(address), "tcp://%s:%s", brokername, portnumber);
 
     MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
     MQTTClient_message pubmsg = MQTTClient_message_initializer;
@@ -177,22 +174,24 @@ int main(int argc, char *argv[])
 		usb_find_busses();
 		usb_find_devices();
 		dev = find_device(vendor, product);
-		sleep(1);
 
-		if (dev == NULL)
-			if (debug == 1)
-				printout("DEBUG: No device found, wait 10sec...", 0);
+		if (dev != NULL)
+			break;
 
-		sleep(10);
+		if (debug == 1)
+			printout("DEBUG: No device found, wait 10sec...", 0);
 
+		sleep(11);
 		++counter;
 
 		if (counter == 10) {
 			printout("Error: Device not found", 0);
+			MQTTClient_disconnect(client, 10000);
+			MQTTClient_destroy(&client);
 			exit(1);
 		}
 
-	}  while (dev == NULL);
+	}  while (1);
 
 	assert(dev);
 
@@ -200,9 +199,15 @@ int main(int argc, char *argv[])
 		printout("DEBUG: USB device found", 0);
 
 	devh = usb_open(dev);
-	assert(devh);
+	if (!devh) {
+		printout("Error: Failed to open USB device", 0);
+		MQTTClient_disconnect(client, 10000);
+		MQTTClient_destroy(&client);
+		exit(1);
+	}
 
 	signal(SIGTERM, release_usb_device);
+	signal(SIGINT,  release_usb_device);
 
 	ret = usb_get_driver_np(devh, 0, buf, sizeof(buf));
 	if (ret == 0) {
@@ -212,6 +217,9 @@ int main(int argc, char *argv[])
 	ret = usb_claim_interface(devh, 0);
 	if (ret != 0) {
 		printout("Error: claim failed with error: ", ret);
+		usb_close(devh);
+		MQTTClient_disconnect(client, 10000);
+		MQTTClient_destroy(&client);
 		exit(1);
 	}
 
@@ -229,7 +237,8 @@ int main(int argc, char *argv[])
 	while(rc==MQTTCLIENT_SUCCESS) {
 
 		time_t t = time(NULL);
-		struct tm tm = *localtime(&t);
+		struct tm tm;
+		localtime_r(&t, &tm);
 
 		// USB COMMAND TO REQUEST DATA
  		// @h*TR
@@ -272,7 +281,7 @@ int main(int argc, char *argv[])
 		}
 
 		memcpy(&iresult,buf+2,2);
-		voc = __le16_to_cpu(iresult);
+		voc = le16toh(iresult);
 		sleep(1);
 
 		if (debug == 1) {
@@ -295,9 +304,9 @@ int main(int argc, char *argv[])
 				printf("VOC: %d, RESULT: OK\n", voc);
 			}
 
-            char svoc[5];
+            char svoc[6];
             // convert 123 to string [buf]
-            sprintf(svoc, "%d", voc);
+            snprintf(svoc, sizeof(svoc), "%d", voc);
             pubmsg.payload = svoc;
             pubmsg.payloadlen = strlen(svoc);
             pubmsg.qos = QOS;
