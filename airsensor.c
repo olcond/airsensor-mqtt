@@ -97,6 +97,10 @@ int main(int argc, char *argv[])
     if (!clientid) clientid = "airsensor";
     const char *topicname = getenv("MQTT_TOPIC");
     if (!topicname) topicname = "home/CO2/voc";
+    const char *ha_prefix = getenv("HA_DISCOVERY_PREFIX");
+    if (!ha_prefix) ha_prefix = "homeassistant";
+    const char *ha_device_name = getenv("HA_DEVICE_NAME");
+    if (!ha_device_name) ha_device_name = "Air Sensor";
     char address[256];
     snprintf(address, sizeof(address), "tcp://%s:%s", brokername, portnumber);
 
@@ -116,6 +120,30 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
+    // Publish Home Assistant MQTT auto-discovery configuration
+    char discovery_topic[256];
+    snprintf(discovery_topic, sizeof(discovery_topic),
+             "%s/sensor/%s/config", ha_prefix, clientid);
+    char discovery_payload[1024];
+    snprintf(discovery_payload, sizeof(discovery_payload),
+             "{\"name\":\"%s VOC\","
+             "\"state_topic\":\"%s\","
+             "\"unit_of_measurement\":\"ppm\","
+             "\"device_class\":\"volatile_organic_compounds_parts\","
+             "\"unique_id\":\"%s_voc\","
+             "\"device\":{\"identifiers\":[\"%s\"],"
+             "\"name\":\"%s\","
+             "\"model\":\"USB VOC Sensor\","
+             "\"manufacturer\":\"Atmel\"}}",
+             ha_device_name, topicname, clientid, clientid, ha_device_name);
+    MQTTClient_message disc_msg = MQTTClient_message_initializer;
+    MQTTClient_deliveryToken disc_token;
+    disc_msg.payload = discovery_payload;
+    disc_msg.payloadlen = (int)strlen(discovery_payload);
+    disc_msg.qos = QOS;
+    disc_msg.retained = 1;
+    MQTTClient_publishMessage(client, discovery_topic, &disc_msg, &disc_token);
+    MQTTClient_waitForCompletion(client, disc_token, TIMEOUT);
 
 	int ret, vendor, product, debug, counter, one_read;
 	int print_voc_only;

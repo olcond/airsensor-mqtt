@@ -171,6 +171,78 @@ static void suite_mqtt_address(void) {
          strcmp(addr, "tcp://mqtt.example.com:8883") == 0);
 }
 
+/* --- Home Assistant MQTT discovery -------------------------------------- */
+
+/*
+ * Discovery topic assembly — airsensor.c
+ *   snprintf(discovery_topic, ..., "%s/sensor/%s/config", ha_prefix, clientid)
+ */
+static void build_discovery_topic(char *topic, size_t size,
+                                  const char *prefix, const char *clientid) {
+    snprintf(topic, size, "%s/sensor/%s/config", prefix, clientid);
+}
+
+/*
+ * Discovery payload assembly — airsensor.c
+ * Builds a minimal JSON payload similar to what airsensor.c produces.
+ */
+static void build_discovery_payload(char *payload, size_t size,
+                                    const char *device_name,
+                                    const char *state_topic,
+                                    const char *clientid) {
+    snprintf(payload, size,
+             "{\"name\":\"%s VOC\","
+             "\"state_topic\":\"%s\","
+             "\"unit_of_measurement\":\"ppm\","
+             "\"device_class\":\"volatile_organic_compounds_parts\","
+             "\"unique_id\":\"%s_voc\","
+             "\"device\":{\"identifiers\":[\"%s\"],"
+             "\"name\":\"%s\","
+             "\"model\":\"USB VOC Sensor\","
+             "\"manufacturer\":\"Atmel\"}}",
+             device_name, state_topic, clientid, clientid, device_name);
+}
+
+static void suite_ha_discovery(void) {
+    print_header("Home Assistant MQTT discovery");
+
+    char topic[256];
+
+    /* Default prefix */
+    build_discovery_topic(topic, sizeof(topic), "homeassistant", "airsensor");
+    TEST("default topic: homeassistant/sensor/airsensor/config",
+         strcmp(topic, "homeassistant/sensor/airsensor/config") == 0);
+
+    /* Custom prefix */
+    build_discovery_topic(topic, sizeof(topic), "myhome", "airsensor");
+    TEST("custom prefix: myhome/sensor/airsensor/config",
+         strcmp(topic, "myhome/sensor/airsensor/config") == 0);
+
+    /* Custom clientid */
+    build_discovery_topic(topic, sizeof(topic), "homeassistant", "wohnzimmer");
+    TEST("custom clientid: homeassistant/sensor/wohnzimmer/config",
+         strcmp(topic, "homeassistant/sensor/wohnzimmer/config") == 0);
+
+    char payload[1024];
+
+    /* Payload contains required HA fields */
+    build_discovery_payload(payload, sizeof(payload),
+                            "Air Sensor", "home/CO2/voc", "airsensor");
+
+    TEST("payload contains state_topic",
+         strstr(payload, "\"state_topic\":\"home/CO2/voc\"") != NULL);
+    TEST("payload contains unit ppm",
+         strstr(payload, "\"unit_of_measurement\":\"ppm\"") != NULL);
+    TEST("payload contains device_class",
+         strstr(payload, "\"device_class\":\"volatile_organic_compounds_parts\"") != NULL);
+    TEST("payload contains unique_id",
+         strstr(payload, "\"unique_id\":\"airsensor_voc\"") != NULL);
+    TEST("payload contains device name",
+         strstr(payload, "\"name\":\"Air Sensor\"") != NULL);
+    TEST("payload contains manufacturer",
+         strstr(payload, "\"manufacturer\":\"Atmel\"") != NULL);
+}
+
 /* --- Known bug: svoc[5] buffer too small --------------------------------- */
 /*
  * airsensor.c:298  char svoc[5];
@@ -220,6 +292,7 @@ int main(void) {
     suite_voc_range();
     suite_voc_parsing();
     suite_mqtt_address();
+    suite_ha_discovery();
     suite_svoc_buffer();
 
     printf("\n====================\n");
