@@ -92,6 +92,42 @@ static unsigned int parse_resistance_from_buf(const unsigned char *buf) {
 }
 
 /*
+ * Parse serial number from *IDN? response text.
+ * Looks for "S/N:" marker and extracts the serial string.
+ * Returns 0 on success, -1 if marker not found.
+ */
+static int parse_serial_from_idn(const char *response, char *serial, size_t serial_size) {
+    const char *pos = strstr(response, "S/N:");
+    if (!pos) return -1;
+    pos += 4;
+    size_t i = 0;
+    while (pos[i] && pos[i] != ' ' && pos[i] != '\n' && pos[i] != '\r' && i < serial_size - 1) {
+        serial[i] = pos[i];
+        i++;
+    }
+    serial[i] = '\0';
+    return 0;
+}
+
+/*
+ * Parse firmware version from *IDN? response text.
+ * Looks for "FW:" marker and extracts the version string.
+ * Returns 0 on success, -1 if marker not found.
+ */
+static int parse_firmware_from_idn(const char *response, char *firmware, size_t fw_size) {
+    const char *pos = strstr(response, "FW:");
+    if (!pos) return -1;
+    pos += 3;
+    size_t i = 0;
+    while (pos[i] && pos[i] != ' ' && pos[i] != '\n' && pos[i] != '\r' && i < fw_size - 1) {
+        firmware[i] = pos[i];
+        i++;
+    }
+    firmware[i] = '\0';
+    return 0;
+}
+
+/*
  * MQTT address assembly — airsensor.c:94–97
  *   char address[80] = "tcp://";
  *   strcat(address, brokername);
@@ -328,6 +364,45 @@ static void suite_ha_discovery(void) {
          strstr(payload, "\"manufacturer\":\"Atmel\"") != NULL);
 }
 
+/* --- *IDN? response parsing ---------------------------------------------- */
+
+static void suite_idn_parsing(void) {
+    print_header("*IDN? response parsing — serial number and firmware");
+
+    char serial[20];
+    char firmware[20];
+    int ret;
+
+    ret = parse_serial_from_idn("DEVICE S/N:4142434445-000001 FW:1.12p5 CPU:ATmega32U4",
+                                 serial, sizeof(serial));
+    TEST("serial found in typical response", ret == 0);
+    TEST("serial value: 4142434445-000001",
+         strcmp(serial, "4142434445-000001") == 0);
+
+    ret = parse_firmware_from_idn("DEVICE S/N:4142434445-000001 FW:1.12p5 CPU:ATmega32U4",
+                                   firmware, sizeof(firmware));
+    TEST("firmware found in typical response", ret == 0);
+    TEST("firmware value: 1.12p5", strcmp(firmware, "1.12p5") == 0);
+
+    ret = parse_serial_from_idn("NO SERIAL HERE", serial, sizeof(serial));
+    TEST("serial not found returns -1", ret == -1);
+
+    ret = parse_firmware_from_idn("NO FIRMWARE HERE", firmware, sizeof(firmware));
+    TEST("firmware not found returns -1", ret == -1);
+
+    ret = parse_serial_from_idn("S/N:ABCDEF123456", serial, sizeof(serial));
+    TEST("serial at end of string", ret == 0);
+    TEST("serial value: ABCDEF123456", strcmp(serial, "ABCDEF123456") == 0);
+
+    ret = parse_firmware_from_idn("FW:2.0", firmware, sizeof(firmware));
+    TEST("firmware at end of string", ret == 0);
+    TEST("firmware value: 2.0", strcmp(firmware, "2.0") == 0);
+
+    ret = parse_serial_from_idn("S/N:ABC123\nFW:1.0\n", serial, sizeof(serial));
+    TEST("serial terminated by newline", ret == 0);
+    TEST("serial value: ABC123", strcmp(serial, "ABC123") == 0);
+}
+
 /* --- Known bug: svoc[5] buffer too small --------------------------------- */
 /*
  * airsensor.c:298  char svoc[5];
@@ -380,6 +455,7 @@ int main(void) {
     suite_resistance_parsing();
     suite_mqtt_address();
     suite_ha_discovery();
+    suite_idn_parsing();
     suite_svoc_buffer();
 
     printf("\n====================\n");
