@@ -4,7 +4,7 @@
 
 **airsensor-mqtt** is a Linux USB device driver and MQTT publisher written in C. It reads VOC (Volatile Organic Compound) air quality measurements from a USB air sensor (Atmel 0x03eb:0x2013 — sold under brands like Conrad and REHAU) and publishes the readings to an MQTT broker for home automation integration.
 
-- **Language**: C (single-file application, ~370 lines)
+- **Language**: C (single-file application, ~520 lines)
 - **License**: MIT
 - **Primary deployment**: Docker container (multi-arch: amd64, arm/v7, arm64)
 - **Maintainer**: Veit Olschinski (volschin@googlemail.com)
@@ -17,7 +17,7 @@
 
 ```
 airsensor-mqtt/
-├── airsensor.c                        # Entire application (~340 lines)
+├── airsensor.c                        # Entire application (~520 lines)
 ├── Makefile                           # Build and test targets
 ├── Dockerfile                         # Multi-stage build (builder + scratch runtime)
 ├── .pre-commit-config.yaml            # Git hooks: gitleaks, cpplint, whitespace
@@ -107,22 +107,24 @@ docker run --rm --device=/dev/bus/usb \
 
 ## Environment Variables
 
-All configuration is done via environment variables. The code uses null-checked `getenv()` with compiled-in defaults (see `airsensor.c:92–103`), so missing variables fall back to the defaults listed below rather than segfaulting.
+All configuration is done via environment variables. The code uses null-checked `getenv()` with compiled-in defaults (see `airsensor.c:122–137`), so missing variables fall back to the defaults listed below rather than segfaulting.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MQTT_BROKERNAME` | `127.0.0.1` | MQTT broker hostname or IP |
 | `MQTT_PORT` | `1883` | MQTT broker port |
 | `MQTT_CLIENTID` | `airsensor` | MQTT client identifier |
-| `MQTT_TOPIC` | `home/CO2/voc` | Topic to publish readings |
+| `MQTT_TOPIC` | `home/CO2/voc` | Topic to publish VOC readings |
 | `MQTT_USERNAME` | _(none)_ | Optional authentication username |
 | `MQTT_PASSWORD` | _(none)_ | Optional authentication password |
+| `MQTT_TOPIC_HUMIDITY` | `home/CO2/humidity` | Topic to publish humidity readings |
+| `MQTT_TOPIC_RESISTANCE` | `home/CO2/resistance` | Topic to publish sensor resistance readings |
 | `HA_DISCOVERY_PREFIX` | `homeassistant` | Home Assistant MQTT discovery topic prefix |
 | `HA_DEVICE_NAME` | `Air Sensor` | Device name shown in Home Assistant |
 
-`MQTT_USERNAME` and `MQTT_PASSWORD` are passed directly to `conn_opts` via `getenv()` (lines 115–116); they return `NULL` if unset, which the Paho library treats as "no authentication".
+`MQTT_USERNAME` and `MQTT_PASSWORD` are passed directly to `conn_opts` via `getenv()` (lines 149–150); they return `NULL` if unset, which the Paho library treats as "no authentication".
 
-`HA_DISCOVERY_PREFIX` and `HA_DEVICE_NAME` control the auto-discovery message published on startup (see `airsensor.c:119–146`).
+`HA_DISCOVERY_PREFIX` and `HA_DEVICE_NAME` control the auto-discovery messages published on startup (see `airsensor.c:316–390`).
 
 ---
 
@@ -130,19 +132,21 @@ All configuration is done via environment variables. The code uses null-checked 
 
 ### Actual startup sequence (as coded)
 
-1. Read environment variables and construct the MQTT broker address (`tcp://host:port`) via `snprintf` (`airsensor.c:104–105`)
-2. Create and connect the MQTT client — **exits with `EXIT_FAILURE` if connection fails** (`airsensor.c:111–121`)
-3. Publish Home Assistant MQTT auto-discovery config (retained, QoS 1) to `{HA_DISCOVERY_PREFIX}/sensor/{clientid}/config` (`airsensor.c:119–146`)
-4. Parse command-line flags (`-d`, `-v`, `-o`, `-h`) (`airsensor.c:159–182`)
-5. Initialize libusb (`usb_init()`)
-6. Poll for USB device (vendor `0x03eb`, product `0x2013`) — up to 10 retries × 11 seconds ≈ 110 seconds
-7. Open device, detach any kernel driver, claim USB interface 0
-8. Register `SIGTERM` and `SIGINT` handlers (`release_usb_device()`) for clean shutdown
-9. Flush any pending USB data with an initial interrupt read on endpoint `0x81`
+1. Read environment variables and construct the MQTT broker address (`tcp://host:port`) via `snprintf` (`airsensor.c:138–139`)
+2. Create and connect the MQTT client — **exits with `EXIT_FAILURE` if connection fails** (`airsensor.c:145–155`)
+3. Parse command-line flags (`-d`, `-v`, `-o`, `-h`) (`airsensor.c:170–193`)
+4. Initialize libusb (`usb_init()`)
+5. Poll for USB device (vendor `0x03eb`, product `0x2013`) — up to 10 retries × 11 seconds ≈ 110 seconds
+6. Open device, detach any kernel driver, claim USB interface 0
+7. Register `SIGTERM` and `SIGINT` handlers (`release_usb_device()`) for clean shutdown
+8. Flush any pending USB data with an initial interrupt read on endpoint `0x81`
+9. Query device identification via `query_device_id()` — sends `*IDN?` USB command to retrieve serial number and firmware version, stored in `device_serial` and `device_firmware` globals (`airsensor.c:275–314`)
+10. Publish Home Assistant MQTT auto-discovery configs (retained, QoS 1) for three entities — VOC, humidity, and resistance — to `{HA_DISCOVERY_PREFIX}/sensor/{clientid}[_suffix]/config` (`airsensor.c:316–390`). The device block conditionally includes `serial_number` and `sw_version` if the `*IDN?` query succeeded.
 
 > Note: MQTT connects **before** the USB device is found. If the USB device is never found or
 > fails to open, the MQTT connection is explicitly disconnected and destroyed before `exit(1)`.
-> The auto-discovery message is published immediately after MQTT connect, also before USB setup.
+> The auto-discovery messages are published **after** USB setup and `*IDN?` query, so they can
+> include device serial number and firmware version when available.
 
 ### Main read loop — `while(rc == MQTTCLIENT_SUCCESS)`
 
@@ -150,17 +154,20 @@ All configuration is done via environment variables. The code uses null-checked 
    `\x40\x68\x2a\x54\x52\x0a\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40`
 2. Read 16-byte response from interrupt endpoint `0x81`
 3. If read returns 0 bytes, sleep 1 second and retry the read once
-4. Extract VOC value: copy 2 bytes from `buf+2`, convert little-endian to host order via `le16toh()` (from `<endian.h>`)
+4. Extract sensor data from the response buffer:
+   - VOC value: copy 2 bytes from `buf+2`, convert little-endian to host order via `le16toh()` (from `<endian.h>`)
+   - Humidity: read 1 byte from `buf[7]` as unsigned char
+   - Resistance: copy 4 bytes from `buf+8`, convert little-endian to host order via `le32toh()`
 5. Sleep 1 second, then do a flush read on endpoint `0x81`
-6. Validate range: 450–15001 ppm
-7. If valid: publish to MQTT topic as ASCII string; wait for delivery confirmation
+6. Validate VOC range: 450–15001 ppm
+7. If valid: publish VOC, humidity, and resistance to their respective MQTT topics as ASCII strings; wait for delivery confirmation of each
 8. If `one_read == 1`: exit immediately
 9. Sleep 30 seconds before next cycle
 10. Loop exits if `MQTTClient_waitForCompletion()` returns non-success
 
 ### Shutdown
 
-The `release_usb_device()` signal handler at `airsensor.c:66` handles both `SIGTERM` and `SIGINT` (registered at `airsensor.c:238–239`). It cleanly:
+The `release_usb_device()` signal handler at `airsensor.c:68` handles both `SIGTERM` and `SIGINT` (registered at `airsensor.c:245–246`). It cleanly:
 - Releases USB interface (`usb_release_interface`)
 - Closes USB device handle (`usb_close`)
 - Disconnects and destroys the MQTT client (`MQTTClient_disconnect`, `MQTTClient_destroy`)
@@ -205,7 +212,7 @@ Tests exit with code `0` on full pass, `1` if any test fails.
 - **Variables**: snake_case (`print_voc_only`, `one_read`, `iresult`)
 - **Macros**: UPPERCASE (`QOS`, `TIMEOUT`)
 - **No dynamic allocation**: only static/stack buffers (`char buf[1000]`, `char svoc[6]`)
-- Logging via `printout()` (`airsensor.c:52`) with format: `YYYY-MM-DD HH:MM:SS, [label] [value]`
+- Logging via `printout()` (`airsensor.c:54`) with format: `YYYY-MM-DD HH:MM:SS, [label] [value]`
 - Raw `printf()` used directly in the main loop for VOC output lines
 
 ### Error handling
@@ -240,16 +247,14 @@ Uses the **Paho MQTT C client** synchronous API (`MQTTClient`, not `MQTTAsync`):
 
 ## Known Code Issues
 
-These are pre-existing issues in the codebase. Do not silently fix them without discussion.
-
-1. **`command[2048]` declared but never used** (`airsensor.c:153`): Dead variable, presumably
-   a leftover from an earlier version.
+There are currently no known code issues.
 
 > **Previously documented issues that have since been fixed:**
-> - ~~`svoc[5]` buffer too small~~: Fixed — now `svoc[6]` with `snprintf` (`airsensor.c:336–338`)
-> - ~~Environment variable null pointer~~: Fixed — all `getenv()` calls now have null-checked fallback defaults (`airsensor.c:92–103`)
-> - ~~`MQTT_USERNAME`/`MQTT_PASSWORD` fetched twice~~: Fixed — now set directly on `conn_opts` once (`airsensor.c:115–116`)
-> - ~~SIGINT not handled~~: Fixed — both `SIGTERM` and `SIGINT` are registered (`airsensor.c:238–239`)
+> - ~~`command[2048]` declared but never used~~: Fixed — dead variable removed
+> - ~~`svoc[5]` buffer too small~~: Fixed — now `svoc[6]` with `snprintf` (`airsensor.c:471–473`)
+> - ~~Environment variable null pointer~~: Fixed — all `getenv()` calls now have null-checked fallback defaults (`airsensor.c:122–137`)
+> - ~~`MQTT_USERNAME`/`MQTT_PASSWORD` fetched twice~~: Fixed — now set directly on `conn_opts` once (`airsensor.c:149–150`)
+> - ~~SIGINT not handled~~: Fixed — both `SIGTERM` and `SIGINT` are registered (`airsensor.c:245–246`)
 > - ~~MQTT not closed on USB timeout exit~~: Fixed — MQTT is disconnected and destroyed before all `exit()` calls in the USB setup path
 
 ---

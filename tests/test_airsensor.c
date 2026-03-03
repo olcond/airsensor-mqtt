@@ -69,6 +69,65 @@ static unsigned short parse_voc_from_buf(const unsigned char *buf) {
 }
 
 /*
+ * Humidity extraction from USB response buffer — byte 7
+ *
+ * The USB response is 16 bytes; byte 7 carries the relative humidity
+ * as an unsigned 8-bit integer.
+ */
+static unsigned char parse_humidity_from_buf(const unsigned char *buf) {
+    return buf[7];
+}
+
+/*
+ * Sensor resistance (Rs) extraction from USB response buffer — bytes 8-11
+ *
+ * The USB response is 16 bytes; bytes 8–11 carry the sensor resistance
+ * as a little-endian unsigned 32-bit integer.
+ */
+static unsigned int parse_resistance_from_buf(const unsigned char *buf) {
+    return (unsigned int)buf[8]
+         | ((unsigned int)buf[9]  << 8)
+         | ((unsigned int)buf[10] << 16)
+         | ((unsigned int)buf[11] << 24);
+}
+
+/*
+ * Parse serial number from *IDN? response text.
+ * Looks for "S/N:" marker and extracts the serial string.
+ * Returns 0 on success, -1 if marker not found.
+ */
+static int parse_serial_from_idn(const char *response, char *serial, size_t serial_size) {
+    const char *pos = strstr(response, "S/N:");
+    if (!pos) return -1;
+    pos += 4;
+    size_t i = 0;
+    while (pos[i] && pos[i] != ' ' && pos[i] != '\n' && pos[i] != '\r' && i < serial_size - 1) {
+        serial[i] = pos[i];
+        i++;
+    }
+    serial[i] = '\0';
+    return 0;
+}
+
+/*
+ * Parse firmware version from *IDN? response text.
+ * Looks for "FW:" marker and extracts the version string.
+ * Returns 0 on success, -1 if marker not found.
+ */
+static int parse_firmware_from_idn(const char *response, char *firmware, size_t fw_size) {
+    const char *pos = strstr(response, "FW:");
+    if (!pos) return -1;
+    pos += 3;
+    size_t i = 0;
+    while (pos[i] && pos[i] != ' ' && pos[i] != '\n' && pos[i] != '\r' && i < fw_size - 1) {
+        firmware[i] = pos[i];
+        i++;
+    }
+    firmware[i] = '\0';
+    return 0;
+}
+
+/*
  * MQTT address assembly — airsensor.c:94–97
  *   char address[80] = "tcp://";
  *   strcat(address, brokername);
@@ -151,6 +210,68 @@ static void suite_voc_parsing(void) {
          parse_voc_from_buf(buf) == 523);
 }
 
+/* --- Humidity buffer parsing --------------------------------------------- */
+
+static void suite_humidity_parsing(void) {
+    print_header("Humidity buffer parsing — byte 7");
+
+    unsigned char buf[16];
+
+    memset(buf, 0, sizeof(buf));
+    buf[7] = 0;
+    TEST("humidity=0 from zero buffer", parse_humidity_from_buf(buf) == 0);
+
+    memset(buf, 0, sizeof(buf));
+    buf[7] = 128;
+    TEST("humidity=128 from buf[7]=0x80", parse_humidity_from_buf(buf) == 128);
+
+    memset(buf, 0, sizeof(buf));
+    buf[7] = 255;
+    TEST("humidity=255 from buf[7]=0xFF", parse_humidity_from_buf(buf) == 255);
+
+    memset(buf, 0xFF, sizeof(buf));
+    buf[7] = 42;
+    TEST("humidity=42 even when surrounding bytes are 0xFF",
+         parse_humidity_from_buf(buf) == 42);
+}
+
+/* --- Sensor resistance buffer parsing ------------------------------------ */
+
+static void suite_resistance_parsing(void) {
+    print_header("Sensor resistance (Rs) buffer parsing — bytes 8-11 (little-endian uint32)");
+
+    unsigned char buf[16];
+
+    memset(buf, 0, sizeof(buf));
+    TEST("resistance=0 from zero buffer", parse_resistance_from_buf(buf) == 0);
+
+    memset(buf, 0, sizeof(buf));
+    buf[8]  = 0xE8;
+    buf[9]  = 0x03;
+    TEST("resistance=1000 (0x000003E8)", parse_resistance_from_buf(buf) == 1000);
+
+    memset(buf, 0, sizeof(buf));
+    buf[8]  = 0xA0;
+    buf[9]  = 0x86;
+    buf[10] = 0x01;
+    TEST("resistance=100000 (0x000186A0)", parse_resistance_from_buf(buf) == 100000);
+
+    memset(buf, 0, sizeof(buf));
+    buf[8]  = 0xFF;
+    buf[9]  = 0xFF;
+    buf[10] = 0xFF;
+    buf[11] = 0xFF;
+    TEST("resistance=4294967295 (0xFFFFFFFF)", parse_resistance_from_buf(buf) == 4294967295U);
+
+    memset(buf, 0xFF, sizeof(buf));
+    buf[8]  = 0xE8;
+    buf[9]  = 0x03;
+    buf[10] = 0x00;
+    buf[11] = 0x00;
+    TEST("resistance=1000 even when surrounding bytes are 0xFF",
+         parse_resistance_from_buf(buf) == 1000);
+}
+
 /* --- MQTT address assembly ----------------------------------------------- */
 
 static void suite_mqtt_address(void) {
@@ -203,6 +324,71 @@ static void build_discovery_payload(char *payload, size_t size,
              device_name, state_topic, clientid, clientid, device_name);
 }
 
+static void build_humidity_discovery_payload(char *payload, size_t size,
+                                              const char *device_name,
+                                              const char *state_topic,
+                                              const char *clientid,
+                                              const char *serial,
+                                              const char *firmware) {
+    char device_block[512];
+    if (serial && serial[0] && firmware && firmware[0]) {
+        snprintf(device_block, sizeof(device_block),
+                 "\"device\":{\"identifiers\":[\"%s\"],"
+                 "\"name\":\"%s\","
+                 "\"model\":\"USB VOC Sensor\","
+                 "\"manufacturer\":\"Atmel\","
+                 "\"serial_number\":\"%s\","
+                 "\"sw_version\":\"%s\"}",
+                 clientid, device_name, serial, firmware);
+    } else {
+        snprintf(device_block, sizeof(device_block),
+                 "\"device\":{\"identifiers\":[\"%s\"],"
+                 "\"name\":\"%s\","
+                 "\"model\":\"USB VOC Sensor\","
+                 "\"manufacturer\":\"Atmel\"}",
+                 clientid, device_name);
+    }
+    snprintf(payload, size,
+             "{\"name\":\"%s Humidity\","
+             "\"state_topic\":\"%s\","
+             "\"unique_id\":\"%s_humidity\","
+             "%s}",
+             device_name, state_topic, clientid, device_block);
+}
+
+static void build_resistance_discovery_payload(char *payload, size_t size,
+                                                const char *device_name,
+                                                const char *state_topic,
+                                                const char *clientid,
+                                                const char *serial,
+                                                const char *firmware) {
+    char device_block[512];
+    if (serial && serial[0] && firmware && firmware[0]) {
+        snprintf(device_block, sizeof(device_block),
+                 "\"device\":{\"identifiers\":[\"%s\"],"
+                 "\"name\":\"%s\","
+                 "\"model\":\"USB VOC Sensor\","
+                 "\"manufacturer\":\"Atmel\","
+                 "\"serial_number\":\"%s\","
+                 "\"sw_version\":\"%s\"}",
+                 clientid, device_name, serial, firmware);
+    } else {
+        snprintf(device_block, sizeof(device_block),
+                 "\"device\":{\"identifiers\":[\"%s\"],"
+                 "\"name\":\"%s\","
+                 "\"model\":\"USB VOC Sensor\","
+                 "\"manufacturer\":\"Atmel\"}",
+                 clientid, device_name);
+    }
+    snprintf(payload, size,
+             "{\"name\":\"%s Resistance\","
+             "\"state_topic\":\"%s\","
+             "\"unit_of_measurement\":\"Ohm\","
+             "\"unique_id\":\"%s_resistance\","
+             "%s}",
+             device_name, state_topic, clientid, device_block);
+}
+
 static void suite_ha_discovery(void) {
     print_header("Home Assistant MQTT discovery");
 
@@ -241,6 +427,83 @@ static void suite_ha_discovery(void) {
          strstr(payload, "\"name\":\"Air Sensor\"") != NULL);
     TEST("payload contains manufacturer",
          strstr(payload, "\"manufacturer\":\"Atmel\"") != NULL);
+}
+
+/* --- Extended HA discovery — humidity, resistance, device info ----------- */
+
+static void suite_extended_ha_discovery(void) {
+    print_header("Extended HA discovery — humidity, resistance, device info");
+
+    char payload[1024];
+
+    /* Humidity discovery without device info */
+    build_humidity_discovery_payload(payload, sizeof(payload),
+                                     "Air Sensor", "home/CO2/humidity",
+                                     "airsensor", "", "");
+    TEST("humidity payload contains name",
+         strstr(payload, "\"name\":\"Air Sensor Humidity\"") != NULL);
+    TEST("humidity payload contains unique_id",
+         strstr(payload, "\"unique_id\":\"airsensor_humidity\"") != NULL);
+    TEST("humidity payload contains state_topic",
+         strstr(payload, "\"state_topic\":\"home/CO2/humidity\"") != NULL);
+
+    /* Resistance discovery with device info */
+    build_resistance_discovery_payload(payload, sizeof(payload),
+                                       "Air Sensor", "home/CO2/resistance",
+                                       "airsensor", "ABC123", "1.12p5");
+    TEST("resistance payload contains name",
+         strstr(payload, "\"name\":\"Air Sensor Resistance\"") != NULL);
+    TEST("resistance payload contains unit Ohm",
+         strstr(payload, "\"unit_of_measurement\":\"Ohm\"") != NULL);
+    TEST("resistance payload contains serial_number",
+         strstr(payload, "\"serial_number\":\"ABC123\"") != NULL);
+    TEST("resistance payload contains sw_version",
+         strstr(payload, "\"sw_version\":\"1.12p5\"") != NULL);
+
+    /* VOC discovery still works (existing function, no serial/firmware) */
+    build_discovery_payload(payload, sizeof(payload),
+                            "Air Sensor", "home/CO2/voc", "airsensor");
+    TEST("VOC payload still works without serial/firmware",
+         strstr(payload, "\"unique_id\":\"airsensor_voc\"") != NULL);
+}
+
+/* --- *IDN? response parsing ---------------------------------------------- */
+
+static void suite_idn_parsing(void) {
+    print_header("*IDN? response parsing — serial number and firmware");
+
+    char serial[20];
+    char firmware[20];
+    int ret;
+
+    ret = parse_serial_from_idn("DEVICE S/N:4142434445-000001 FW:1.12p5 CPU:ATmega32U4",
+                                 serial, sizeof(serial));
+    TEST("serial found in typical response", ret == 0);
+    TEST("serial value: 4142434445-000001",
+         strcmp(serial, "4142434445-000001") == 0);
+
+    ret = parse_firmware_from_idn("DEVICE S/N:4142434445-000001 FW:1.12p5 CPU:ATmega32U4",
+                                   firmware, sizeof(firmware));
+    TEST("firmware found in typical response", ret == 0);
+    TEST("firmware value: 1.12p5", strcmp(firmware, "1.12p5") == 0);
+
+    ret = parse_serial_from_idn("NO SERIAL HERE", serial, sizeof(serial));
+    TEST("serial not found returns -1", ret == -1);
+
+    ret = parse_firmware_from_idn("NO FIRMWARE HERE", firmware, sizeof(firmware));
+    TEST("firmware not found returns -1", ret == -1);
+
+    ret = parse_serial_from_idn("S/N:ABCDEF123456", serial, sizeof(serial));
+    TEST("serial at end of string", ret == 0);
+    TEST("serial value: ABCDEF123456", strcmp(serial, "ABCDEF123456") == 0);
+
+    ret = parse_firmware_from_idn("FW:2.0", firmware, sizeof(firmware));
+    TEST("firmware at end of string", ret == 0);
+    TEST("firmware value: 2.0", strcmp(firmware, "2.0") == 0);
+
+    ret = parse_serial_from_idn("S/N:ABC123\nFW:1.0\n", serial, sizeof(serial));
+    TEST("serial terminated by newline", ret == 0);
+    TEST("serial value: ABC123", strcmp(serial, "ABC123") == 0);
 }
 
 /* --- Known bug: svoc[5] buffer too small --------------------------------- */
@@ -291,8 +554,12 @@ int main(void) {
 
     suite_voc_range();
     suite_voc_parsing();
+    suite_humidity_parsing();
+    suite_resistance_parsing();
     suite_mqtt_address();
     suite_ha_discovery();
+    suite_extended_ha_discovery();
+    suite_idn_parsing();
     suite_svoc_buffer();
 
     printf("\n====================\n");
