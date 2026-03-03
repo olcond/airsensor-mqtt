@@ -69,6 +69,29 @@ static unsigned short parse_voc_from_buf(const unsigned char *buf) {
 }
 
 /*
+ * Humidity extraction from USB response buffer — byte 7
+ *
+ * The USB response is 16 bytes; byte 7 carries the relative humidity
+ * as an unsigned 8-bit integer.
+ */
+static unsigned char parse_humidity_from_buf(const unsigned char *buf) {
+    return buf[7];
+}
+
+/*
+ * Sensor resistance (Rs) extraction from USB response buffer — bytes 8-11
+ *
+ * The USB response is 16 bytes; bytes 8–11 carry the sensor resistance
+ * as a little-endian unsigned 32-bit integer.
+ */
+static unsigned int parse_resistance_from_buf(const unsigned char *buf) {
+    return (unsigned int)buf[8]
+         | ((unsigned int)buf[9]  << 8)
+         | ((unsigned int)buf[10] << 16)
+         | ((unsigned int)buf[11] << 24);
+}
+
+/*
  * MQTT address assembly — airsensor.c:94–97
  *   char address[80] = "tcp://";
  *   strcat(address, brokername);
@@ -149,6 +172,68 @@ static void suite_voc_parsing(void) {
     buf[3] = 0x02;
     TEST("parse 523 even when surrounding bytes are 0xFF",
          parse_voc_from_buf(buf) == 523);
+}
+
+/* --- Humidity buffer parsing --------------------------------------------- */
+
+static void suite_humidity_parsing(void) {
+    print_header("Humidity buffer parsing — byte 7");
+
+    unsigned char buf[16];
+
+    memset(buf, 0, sizeof(buf));
+    buf[7] = 0;
+    TEST("humidity=0 from zero buffer", parse_humidity_from_buf(buf) == 0);
+
+    memset(buf, 0, sizeof(buf));
+    buf[7] = 128;
+    TEST("humidity=128 from buf[7]=0x80", parse_humidity_from_buf(buf) == 128);
+
+    memset(buf, 0, sizeof(buf));
+    buf[7] = 255;
+    TEST("humidity=255 from buf[7]=0xFF", parse_humidity_from_buf(buf) == 255);
+
+    memset(buf, 0xFF, sizeof(buf));
+    buf[7] = 42;
+    TEST("humidity=42 even when surrounding bytes are 0xFF",
+         parse_humidity_from_buf(buf) == 42);
+}
+
+/* --- Sensor resistance buffer parsing ------------------------------------ */
+
+static void suite_resistance_parsing(void) {
+    print_header("Sensor resistance (Rs) buffer parsing — bytes 8-11 (little-endian uint32)");
+
+    unsigned char buf[16];
+
+    memset(buf, 0, sizeof(buf));
+    TEST("resistance=0 from zero buffer", parse_resistance_from_buf(buf) == 0);
+
+    memset(buf, 0, sizeof(buf));
+    buf[8]  = 0xE8;
+    buf[9]  = 0x03;
+    TEST("resistance=1000 (0x000003E8)", parse_resistance_from_buf(buf) == 1000);
+
+    memset(buf, 0, sizeof(buf));
+    buf[8]  = 0xA0;
+    buf[9]  = 0x86;
+    buf[10] = 0x01;
+    TEST("resistance=100000 (0x000186A0)", parse_resistance_from_buf(buf) == 100000);
+
+    memset(buf, 0, sizeof(buf));
+    buf[8]  = 0xFF;
+    buf[9]  = 0xFF;
+    buf[10] = 0xFF;
+    buf[11] = 0xFF;
+    TEST("resistance=4294967295 (0xFFFFFFFF)", parse_resistance_from_buf(buf) == 4294967295U);
+
+    memset(buf, 0xFF, sizeof(buf));
+    buf[8]  = 0xE8;
+    buf[9]  = 0x03;
+    buf[10] = 0x00;
+    buf[11] = 0x00;
+    TEST("resistance=1000 even when surrounding bytes are 0xFF",
+         parse_resistance_from_buf(buf) == 1000);
 }
 
 /* --- MQTT address assembly ----------------------------------------------- */
@@ -291,6 +376,8 @@ int main(void) {
 
     suite_voc_range();
     suite_voc_parsing();
+    suite_humidity_parsing();
+    suite_resistance_parsing();
     suite_mqtt_address();
     suite_ha_discovery();
     suite_svoc_buffer();
