@@ -82,18 +82,20 @@ gcc -o airsensor airsensor.c -lusb -lpaho-mqtt3c -lpthread
 
 ## Konfiguration
 
-Die gesamte MQTT-Konfiguration erfolgt ueber Umgebungsvariablen. **Alle Variablen muessen gesetzt sein** -- bei fehlenden Variablen stuerzt das Programm ab.
+Die gesamte MQTT-Konfiguration erfolgt ueber Umgebungsvariablen. Alle Variablen haben Standardwerte und sind optional -- fehlende Variablen werden automatisch mit den Standardwerten belegt.
 
-| Variable | Beschreibung | Beispiel |
+| Variable | Beschreibung | Standard |
 |----------|-------------|---------|
-| `MQTT_BROKERNAME` | Hostname oder IP-Adresse des MQTT-Brokers | `192.168.1.10` |
+| `MQTT_BROKERNAME` | Hostname oder IP-Adresse des MQTT-Brokers | `127.0.0.1` |
 | `MQTT_PORT` | Port des MQTT-Brokers | `1883` |
 | `MQTT_CLIENTID` | Client-ID fuer die MQTT-Verbindung | `airsensor` |
-| `MQTT_TOPIC` | MQTT-Topic, auf das die Messwerte publiziert werden | `home/CO2/voc` |
-| `MQTT_USERNAME` | Benutzername fuer MQTT-Authentifizierung (optional) | `mqttuser` |
-| `MQTT_PASSWORD` | Passwort fuer MQTT-Authentifizierung (optional) | `mqttpass` |
-| `HA_DISCOVERY_PREFIX` | Praefix fuer Home Assistant Auto-Discovery (Standard: `homeassistant`) | `homeassistant` |
-| `HA_DEVICE_NAME` | Geraetenamen im Home Assistant (Standard: `Air Sensor`) | `Wohnzimmer Sensor` |
+| `MQTT_TOPIC` | MQTT-Topic fuer VOC-Messwerte | `home/CO2/voc` |
+| `MQTT_USERNAME` | Benutzername fuer MQTT-Authentifizierung (optional) | _(keiner)_ |
+| `MQTT_PASSWORD` | Passwort fuer MQTT-Authentifizierung (optional) | _(keines)_ |
+| `MQTT_TOPIC_HUMIDITY` | MQTT-Topic fuer Luftfeuchtigkeit | `home/CO2/humidity` |
+| `MQTT_TOPIC_RESISTANCE` | MQTT-Topic fuer Sensorwiderstand | `home/CO2/resistance` |
+| `HA_DISCOVERY_PREFIX` | Praefix fuer Home Assistant Auto-Discovery | `homeassistant` |
+| `HA_DEVICE_NAME` | Geraetenamen im Home Assistant | `Air Sensor` |
 
 ## Benutzung
 
@@ -156,6 +158,8 @@ services:
       MQTT_TOPIC: "home/CO2/voc"
       MQTT_USERNAME: ""
       MQTT_PASSWORD: ""
+      MQTT_TOPIC_HUMIDITY: "home/CO2/humidity"
+      MQTT_TOPIC_RESISTANCE: "home/CO2/resistance"
       HA_DISCOVERY_PREFIX: "homeassistant"
       HA_DEVICE_NAME: "Air Sensor"
 ```
@@ -174,6 +178,14 @@ Der Sensor liefert VOC-Werte im Bereich von **450 bis 2000 ppm** (laut Spezifika
 | 600--1000 | Gut |
 | 1000--1500 | Maessig |
 | 1500--2000 | Schlecht |
+
+### Luftfeuchtigkeit
+
+Der Sensor liefert einen relativen Luftfeuchtigkeitswert als Rohwert (1 Byte, 0--255). Dieser wird auf dem Topic `MQTT_TOPIC_HUMIDITY` publiziert.
+
+### Sensorwiderstand
+
+Der Sensorwiderstand wird als 32-Bit-Ganzzahl (Little-Endian) aus der USB-Antwort extrahiert und in Ohm auf dem Topic `MQTT_TOPIC_RESISTANCE` publiziert.
 
 ### Ausgabeformat
 
@@ -230,7 +242,7 @@ Das Discovery-Topic hat das Format:
 homeassistant/sensor/airsensor/config
 ```
 
-Die publizierte JSON-Konfiguration enthaelt:
+Beim Start werden drei Discovery-Nachrichten publiziert -- fuer VOC, Luftfeuchtigkeit und Sensorwiderstand. Die VOC-Konfiguration sieht beispielsweise so aus:
 
 ```json
 {
@@ -243,10 +255,14 @@ Die publizierte JSON-Konfiguration enthaelt:
     "identifiers": ["airsensor"],
     "name": "Air Sensor",
     "model": "USB VOC Sensor",
-    "manufacturer": "Atmel"
+    "manufacturer": "Atmel",
+    "serial_number": "ABC123",
+    "sw_version": "1.0"
   }
 }
 ```
+
+> **Hinweis:** Die Felder `serial_number` und `sw_version` im Device-Block werden nur dann gesetzt, wenn der Sensor auf die `*IDN?`-Abfrage beim Start antwortet. Bei aelteren Sensoren ohne diese Unterstuetzung entfallen diese Felder.
 
 Der Geraetenamen und das Discovery-Praefix koennen ueber Umgebungsvariablen angepasst werden:
 
@@ -338,13 +354,13 @@ Das Programm sucht bis zu 10 Mal im Abstand von ca. 11 Sekunden nach dem USB-Ger
 
 ### Programm stuerzt ohne Fehlermeldung ab (Segmentation Fault)
 
-Haeufigste Ursache: Eine oder mehrere Umgebungsvariablen sind nicht gesetzt. Alle sechs Variablen (`MQTT_BROKERNAME`, `MQTT_PORT`, `MQTT_CLIENTID`, `MQTT_TOPIC`, `MQTT_USERNAME`, `MQTT_PASSWORD`) muessen vorhanden sein.
+Alle Umgebungsvariablen haben Standardwerte und sind optional. Falls dennoch ein Absturz auftritt, bitte im Debug-Modus (`-d`) ausfuehren und die Ausgabe pruefen.
 
 ## Entwicklung
 
 ### Projektstruktur
 
-Das gesamte Programm besteht aus einer einzigen Quelldatei (`airsensor.c`, ~330 Zeilen). Es gibt keine Unit-Tests; die Verifizierung erfordert einen echten USB-Sensor.
+Das gesamte Programm besteht aus einer einzigen Quelldatei (`airsensor.c`, ~520 Zeilen). Unit-Tests befinden sich in `tests/test_airsensor.c` und koennen ohne Hardware ausgefuehrt werden (`make test`).
 
 ### Kompilieren und testen
 
