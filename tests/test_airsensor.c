@@ -98,7 +98,20 @@ static unsigned int parse_resistance_from_buf(const unsigned char *buf) {
  */
 static int parse_serial_from_idn(const char *response, char *serial, size_t serial_size) {
     const char *pos = strstr(response, "S/N:");
-    if (!pos) return -1;
+    if (!pos) {
+        // Fallback: copy whole trimmed string as serial if no marker found
+        size_t j = 0;
+        size_t dest_idx = 0;
+        while (response[j] && dest_idx < serial_size - 1) {
+            char c = response[j];
+            if (c != '\r' && c != '\n' && c != ' ') {
+                serial[dest_idx++] = c;
+            }
+            j++;
+        }
+        serial[dest_idx] = '\0';
+        return (dest_idx > 0) ? 0 : -1;
+    }
     pos += 4;
     size_t i = 0;
     while (pos[i]
@@ -514,7 +527,7 @@ static void suite_idn_parsing(void) {
     TEST("firmware value: 1.12p5", strcmp(firmware, "1.12p5") == 0);
 
     ret = parse_serial_from_idn("NO SERIAL HERE", serial, sizeof(serial));
-    TEST("serial not found returns -1", ret == -1);
+    TEST("bare string extracted when S/N: missing", ret == 0 && strcmp(serial, "NOSERIALHERE") == 0);
 
     ret = parse_firmware_from_idn("NO FIRMWARE HERE", firmware, sizeof(firmware));
     TEST("firmware not found returns -1", ret == -1);

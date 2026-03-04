@@ -204,6 +204,11 @@ int main(int argc, char *argv[])
     if (!topic_humidity) topic_humidity = "home/CO2/humidity";
     const char *topic_resistance = getenv("MQTT_TOPIC_RESISTANCE");
     if (!topic_resistance) topic_resistance = "home/CO2/resistance";
+
+	const char *topic_debug = getenv("MQTT_TOPIC_DEBUG");
+	if (!topic_debug) topic_debug = "home/CO2/debug";
+	const char *topic_pwm = getenv("MQTT_TOPIC_PWM");
+	if (!topic_pwm) topic_pwm = "home/CO2/pwm";
     char address[256];
     snprintf(address, sizeof(address), "tcp://%s:%s", brokername, portnumber);
 
@@ -345,12 +350,27 @@ int main(int argc, char *argv[])
 	{
 		char idn_response[256];
 		if (query_device_id(devh, idn_response, sizeof(idn_response)) == 0) {
+
 			parse_serial_from_idn_response(idn_response,
 			                               device_serial,
 			                               sizeof(device_serial));
 			parse_firmware_from_idn_response(idn_response,
 			                                 device_firmware,
 			                                 sizeof(device_firmware));
+
+			// Robust fallback if serial was not found via S/N: marker
+			if (device_serial[0] == '\0') {
+				size_t dest_idx = 0;
+				size_t j = 0;
+				while (idn_response[j] && dest_idx < sizeof(device_serial) - 1) {
+					char c = idn_response[j];
+					if (!is_idn_delim(c)) {
+						device_serial[dest_idx++] = c;
+					}
+					j++;
+				}
+				device_serial[dest_idx] = '\0';
+			}
 			if (device_serial[0])
 				printf("Device serial: %s\n", device_serial);
 			if (device_firmware[0])
@@ -368,7 +388,7 @@ int main(int argc, char *argv[])
 
     // Publish Home Assistant MQTT auto-discovery configuration
     char device_block[512];
-    if (device_serial[0] && device_firmware[0]) {
+    if (device_serial[0]) {
         snprintf(device_block, sizeof(device_block),
                  "\"device\":{\"identifiers\":[\"%s\"],"
                  "\"name\":\"%s\","
@@ -376,7 +396,7 @@ int main(int argc, char *argv[])
                  "\"manufacturer\":\"Atmel\","
                  "\"serial_number\":\"%s\","
                  "\"sw_version\":\"%s\"}",
-                 clientid, ha_device_name, device_serial, device_firmware);
+                 clientid, ha_device_name, device_serial, (device_firmware[0] ? device_firmware : "unknown"));
     } else {
         snprintf(device_block, sizeof(device_block),
                  "\"device\":{\"identifiers\":[\"%s\"],"
@@ -460,12 +480,30 @@ int main(int argc, char *argv[])
 			printout("DEBUG: Return code from USB write: ", ret);
 
 		if (debug == 1)
-			printout("DEBUG: Read USB", 0);
+			printout("DEBUG: Read USB (Chunk 1 of 3)", 0);
 
-		ret = usb_interrupt_read(devh, 0x00000081, buf, 0x0000010, 1000);
+		unsigned char fullbuf[48];
+		memset(fullbuf, 0, 48);
 
+		ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 0x0000010, 1000);
 		if (debug == 1)
-			printout("DEBUG: Return code from USB read: ", ret);
+			printout("DEBUG: Return code from USB read 1: ", ret);
+
+		if (ret == 0) {
+			sleep(1);
+			ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 0x0000010, 1000);
+			if (debug == 1) printout("DEBUG: Return code from USB read 1 (retry): ", ret);
+		}
+		
+		if (ret == 16) {
+			// Try to read the remaining 2 chunks to get full 48 bytes
+			int ret2 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 16, 0x0000010, 1000);
+			if (debug == 1) printout("DEBUG: Return code from USB read 2: ", ret2);
+			if (ret2 == 16) {
+				int ret3 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 32, 0x0000010, 1000);
+				if (debug == 1) printout("DEBUG: Return code from USB read 3: ", ret3);
+			}
+		}
 
 		if ( !((ret == 0) || (ret == 16)))
 		{
@@ -476,22 +514,20 @@ int main(int argc, char *argv[])
 			}
 		}
 
-		if (ret == 0) {
-
-			if (debug == 1)
-				printout("DEBUG: Read USB", 0);
-
-			sleep(1);
-			ret = usb_interrupt_read(devh, 0x00000081, buf, 0x0000010, 1000);
-
-			if (debug == 1)
-				printout("DEBUG: Return code from USB read: ", ret);
-		}
-
-		memcpy(&iresult,buf+2,2);
+		memcpy(&iresult, fullbuf+2, 2);
 		voc = le16toh(iresult);
-		humidity_raw = (unsigned char)buf[7];
-		memcpy(&resistance, buf + 8, 4);
+		
+		unsigned short debug_val = 0;
+		memcpy(&debug_val, fullbuf+4, 2);
+		debug_val = le16toh(debug_val);
+		
+		unsigned short pwm_val = 0;
+		memcpy(&pwm_val, fullbuf+6, 2);
+		pwm_val = le16toh(pwm_val);
+
+		humidity_raw = (unsigned char)fullbuf[7];
+		
+		memcpy(&resistance, fullbuf + 8, 4);
 		resistance = le32toh(resistance);
 
 		if (debug == 1) {
@@ -521,39 +557,20 @@ int main(int argc, char *argv[])
 				printf("VOC: %d, RESULT: OK\n", voc);
 			}
 
-            char svoc[6];
-            // convert 123 to string [buf]
-            snprintf(svoc, sizeof(svoc), "%d", voc);
-            pubmsg.payload = svoc;
-            pubmsg.payloadlen = strlen(svoc);
+            char json_payload[512];
+            snprintf(json_payload, sizeof(json_payload), 
+                "{\"voc\":%d,\"humidity\":%u,\"resistance\":%u,\"debug\":%u,\"pwm\":%u}",
+                voc, humidity_raw, resistance, debug_val, pwm_val);
+            
+            pubmsg.payload = json_payload;
+            pubmsg.payloadlen = strlen(json_payload);
             pubmsg.qos = QOS;
             pubmsg.retained = 0;
             MQTTClient_publishMessage(client, topicname, &pubmsg, &token);
-            printf("Waiting for up to %d seconds for publication of %s\n"
-               "on topic %s for client with ClientID: %s\n",
-               (int)(TIMEOUT/1000), pubmsg.payload, topicname, clientid);
+            printf("Waiting for up to %d seconds for publication of %s\non topic %s for client with ClientID: %s\n",
+               (int)(TIMEOUT/1000), (char*)pubmsg.payload, topicname, clientid);
             rc = MQTTClient_waitForCompletion(client, token, TIMEOUT);
             printf("Message with delivery token %d delivered\n", token);
-
-            // Publish humidity
-            char shum[4];
-            snprintf(shum, sizeof(shum), "%u", humidity_raw);
-            pubmsg.payload = shum;
-            pubmsg.payloadlen = strlen(shum);
-            pubmsg.qos = QOS;
-            pubmsg.retained = 0;
-            MQTTClient_publishMessage(client, topic_humidity, &pubmsg, &token);
-            rc = MQTTClient_waitForCompletion(client, token, TIMEOUT);
-
-            // Publish sensor resistance
-            char sres[11];
-            snprintf(sres, sizeof(sres), "%u", resistance);
-            pubmsg.payload = sres;
-            pubmsg.payloadlen = strlen(sres);
-            pubmsg.qos = QOS;
-            pubmsg.retained = 0;
-            MQTTClient_publishMessage(client, topic_resistance, &pubmsg, &token);
-            rc = MQTTClient_waitForCompletion(client, token, TIMEOUT);
 
 		} else {
 			if (print_voc_only == 1) {
