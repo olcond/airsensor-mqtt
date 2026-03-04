@@ -162,8 +162,10 @@ static int parse_firmware_from_idn_response(const char *response,
  * Returns 0 on success, -1 on failure.
  */
 int query_device_id(struct usb_dev_handle *handle, char *resp_buf, size_t resp_size) {
-    char cmd[16];
-    memcpy(cmd, "@0001*IDN?\n@@@@@", 16);
+    static unsigned short idn_seq = 1;
+    char cmd[17];
+    snprintf(cmd, sizeof(cmd), "@%04X*IDN?\n@@@@@", idn_seq);
+    idn_seq = (idn_seq < 0xFFFF) ? (unsigned short)(idn_seq + 1) : 1;
     int ret = usb_interrupt_write(handle, 0x00000002, cmd, 16, 1000);
     if (ret < 0) return -1;
 
