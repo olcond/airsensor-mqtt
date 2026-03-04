@@ -504,6 +504,26 @@ static void suite_idn_parsing(void) {
     ret = parse_serial_from_idn("S/N:ABC123\nFW:1.0\n", serial, sizeof(serial));
     TEST("serial terminated by newline", ret == 0);
     TEST("serial value: ABC123", strcmp(serial, "ABC123") == 0);
+
+    /* Semicolon as field delimiter — used in real device responses */
+    ret = parse_serial_from_idn("S/N:ABC123;FW:1.2", serial, sizeof(serial));
+    TEST("serial terminated by semicolon", ret == 0);
+    TEST("serial value: ABC123 (semicolon delim)", strcmp(serial, "ABC123") == 0);
+
+    /* Firmware terminated by semicolon */
+    ret = parse_firmware_from_idn("FW:1.12p5;MCU:ATmega", firmware, sizeof(firmware));
+    TEST("firmware terminated by semicolon", ret == 0);
+    TEST("firmware value: 1.12p5 (semicolon delim)", strcmp(firmware, "1.12p5") == 0);
+
+    /* Firmware terminated by @ padding characters */
+    ret = parse_firmware_from_idn("FW:1.12p5@@@@", firmware, sizeof(firmware));
+    TEST("firmware terminated by @ padding", ret == 0);
+    TEST("firmware value with @ terminator", strcmp(firmware, "1.12p5") == 0);
+
+    /* Fallback: no FW: marker — firmware embedded between ; and $;;MCU (FHEM-style) */
+    ret = parse_firmware_from_idn("...;1.12p5$;;MCU...", firmware, sizeof(firmware));
+    TEST("firmware fallback marker parsed", ret == 0);
+    TEST("firmware fallback value: 1.12p5", strcmp(firmware, "1.12p5") == 0);
 }
 
 /* --- Known bug: svoc[5] buffer too small --------------------------------- */
