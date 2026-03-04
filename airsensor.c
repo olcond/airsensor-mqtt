@@ -433,7 +433,7 @@ int main(int argc, char *argv[])
     snprintf(resistance_disc_payload, sizeof(resistance_disc_payload),
              "{\"name\":\"%s Resistance\","
              "\"state_topic\":\"%s\","
-             "\"unit_of_measurement\":\"Ohm\","
+             "\"unit_of_measurement\":\"Ω\","
              "\"unique_id\":\"%s_resistance\","
              "%s}",
              ha_device_name, topic_resistance, clientid, device_block);
