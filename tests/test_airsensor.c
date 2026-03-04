@@ -101,7 +101,13 @@ static int parse_serial_from_idn(const char *response, char *serial, size_t seri
     if (!pos) return -1;
     pos += 4;
     size_t i = 0;
-    while (pos[i] && pos[i] != ' ' && pos[i] != '\n' && pos[i] != '\r' && i < serial_size - 1) {
+    while (pos[i]
+           && pos[i] != ' '
+           && pos[i] != '\n'
+           && pos[i] != '\r'
+           && pos[i] != ';'
+           && pos[i] != '@'
+           && i < serial_size - 1) {
         serial[i] = pos[i];
         i++;
     }
@@ -116,14 +122,34 @@ static int parse_serial_from_idn(const char *response, char *serial, size_t seri
  */
 static int parse_firmware_from_idn(const char *response, char *firmware, size_t fw_size) {
     const char *pos = strstr(response, "FW:");
-    if (!pos) return -1;
-    pos += 3;
-    size_t i = 0;
-    while (pos[i] && pos[i] != ' ' && pos[i] != '\n' && pos[i] != '\r' && i < fw_size - 1) {
-        firmware[i] = pos[i];
-        i++;
+    if (pos) {
+        pos += 3;
+        size_t i = 0;
+        while (pos[i]
+               && pos[i] != ' '
+               && pos[i] != '\n'
+               && pos[i] != '\r'
+               && pos[i] != ';'
+               && pos[i] != '@'
+               && i < fw_size - 1) {
+            firmware[i] = pos[i];
+            i++;
+        }
+        firmware[i] = '\0';
+        return 0;
     }
-    firmware[i] = '\0';
+    /* Fallback: parse between first ';' and '$;;MCU', strip trailing '$' */
+    const char *start = strchr(response, ';');
+    if (!start) return -1;
+    start++;
+    const char *end = strstr(start, "$;;MCU");
+    if (!end) return -1;
+    /* strip trailing '$' from value before the marker */
+    while (end > start && *(end - 1) == '$') end--;
+    size_t len = (size_t)(end - start);
+    if (len == 0 || len >= fw_size) return -1;
+    memcpy(firmware, start, len);
+    firmware[len] = '\0';
     return 0;
 }
 
@@ -505,22 +531,22 @@ static void suite_idn_parsing(void) {
     TEST("serial terminated by newline", ret == 0);
     TEST("serial value: ABC123", strcmp(serial, "ABC123") == 0);
 
-    /* Semicolon as field delimiter — used in real device responses */
+    /* Delimiter: semicolon */
     ret = parse_serial_from_idn("S/N:ABC123;FW:1.2", serial, sizeof(serial));
     TEST("serial terminated by semicolon", ret == 0);
-    TEST("serial value: ABC123 (semicolon delim)", strcmp(serial, "ABC123") == 0);
+    TEST("serial value: ABC123", strcmp(serial, "ABC123") == 0);
 
-    /* Firmware terminated by semicolon */
+    /* Firmware: semicolon delimiter */
     ret = parse_firmware_from_idn("FW:1.12p5;MCU:ATmega", firmware, sizeof(firmware));
     TEST("firmware terminated by semicolon", ret == 0);
-    TEST("firmware value: 1.12p5 (semicolon delim)", strcmp(firmware, "1.12p5") == 0);
+    TEST("firmware value: 1.12p5", strcmp(firmware, "1.12p5") == 0);
 
-    /* Firmware terminated by @ padding characters */
+    /* Firmware: @ padding delimiter */
     ret = parse_firmware_from_idn("FW:1.12p5@@@@", firmware, sizeof(firmware));
     TEST("firmware terminated by @ padding", ret == 0);
     TEST("firmware value with @ terminator", strcmp(firmware, "1.12p5") == 0);
 
-    /* Fallback: no FW: marker — firmware embedded between ; and $;;MCU (FHEM-style) */
+    /* Firmware: fallback pattern (FHEM-style, no FW: marker) */
     ret = parse_firmware_from_idn("...;1.12p5$;;MCU...", firmware, sizeof(firmware));
     TEST("firmware fallback marker parsed", ret == 0);
     TEST("firmware fallback value: 1.12p5", strcmp(firmware, "1.12p5") == 0);
