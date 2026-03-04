@@ -90,6 +90,73 @@ struct usb_device* find_device(int vendor, int product) {
 }
 
 /*
+ * Return non-zero if c is a field delimiter in an *IDN? response.
+ * Delimiters: space, newline, carriage-return, semicolon, at-sign.
+ */
+static int is_idn_delim(char c) {
+    return (c == ' ' || c == '\n' || c == '\r' || c == ';' || c == '@');
+}
+
+/*
+ * Parse the serial number from an *IDN? response string.
+ * Looks for "S/N:" and extracts characters until the next delimiter or
+ * end of string.  Writes a null-terminated result into out/out_size.
+ * Returns 0 on success, -1 if the marker is not found.
+ */
+static int parse_serial_from_idn_response(const char *response,
+                                          char *out, size_t out_size) {
+    const char *pos = strstr(response, "S/N:");
+    if (!pos) return -1;
+    pos += 4;
+    size_t i = 0;
+    while (pos[i] && !is_idn_delim(pos[i]) && i < out_size - 1) {
+        out[i] = pos[i];
+        i++;
+    }
+    out[i] = '\0';
+    return 0;
+}
+
+/*
+ * Parse the firmware version from an *IDN? response string.
+ * Primary: looks for "FW:" and extracts characters until the next
+ * delimiter or end of string.
+ * Fallback (FHEM-style responses without "FW:" marker): parse the
+ * token between the first ';' and "$;;MCU", stripping a trailing '$'.
+ * Returns 0 on success, -1 if no version can be extracted.
+ */
+static int parse_firmware_from_idn_response(const char *response,
+                                            char *out, size_t out_size) {
+    /* Primary path: "FW:" marker */
+    const char *pos = strstr(response, "FW:");
+    if (pos) {
+        pos += 3;
+        size_t i = 0;
+        while (pos[i] && !is_idn_delim(pos[i]) && i < out_size - 1) {
+            out[i] = pos[i];
+            i++;
+        }
+        out[i] = '\0';
+        return 0;
+    }
+
+    /* Fallback path: token between first ';' and "$;;MCU" */
+    const char *semi = strchr(response, ';');
+    if (!semi) return -1;
+    semi++;  /* skip the ';' */
+    const char *end = strstr(semi, "$;;MCU");
+    if (!end) return -1;
+    /* strip trailing '$' before "$;;MCU" if present */
+    while (end > semi && *(end - 1) == '$')
+        end--;
+    size_t len = (size_t)(end - semi);
+    if (len == 0 || len >= out_size) return -1;
+    memcpy(out, semi, len);
+    out[len] = '\0';
+    return 0;
+}
+
+/*
  * Send a Type 1 command (*IDN?) to query device identification.
  * Reads the response into resp_buf (null-terminated string).
  * Returns 0 on success, -1 on failure.
@@ -276,28 +343,12 @@ int main(int argc, char *argv[])
 	{
 		char idn_response[256];
 		if (query_device_id(devh, idn_response, sizeof(idn_response)) == 0) {
-			const char *sn_pos = strstr(idn_response, "S/N:");
-			if (sn_pos) {
-				sn_pos += 4;
-				size_t i = 0;
-				while (sn_pos[i] && sn_pos[i] != ' ' && sn_pos[i] != '\n'
-				       && i < sizeof(device_serial) - 1) {
-					device_serial[i] = sn_pos[i];
-					i++;
-				}
-				device_serial[i] = '\0';
-			}
-			const char *fw_pos = strstr(idn_response, "FW:");
-			if (fw_pos) {
-				fw_pos += 3;
-				size_t i = 0;
-				while (fw_pos[i] && fw_pos[i] != ' ' && fw_pos[i] != '\n'
-				       && i < sizeof(device_firmware) - 1) {
-					device_firmware[i] = fw_pos[i];
-					i++;
-				}
-				device_firmware[i] = '\0';
-			}
+			parse_serial_from_idn_response(idn_response,
+			                               device_serial,
+			                               sizeof(device_serial));
+			parse_firmware_from_idn_response(idn_response,
+			                                 device_firmware,
+			                                 sizeof(device_firmware));
 			if (device_serial[0])
 				printf("Device serial: %s\n", device_serial);
 			if (device_firmware[0])
