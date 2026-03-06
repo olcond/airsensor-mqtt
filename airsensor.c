@@ -200,15 +200,6 @@ int main(int argc, char *argv[])
     if (!ha_prefix) ha_prefix = "homeassistant";
     const char *ha_device_name = getenv("HA_DEVICE_NAME");
     if (!ha_device_name) ha_device_name = "Air Sensor";
-    const char *topic_humidity = getenv("MQTT_TOPIC_HUMIDITY");
-    if (!topic_humidity) topic_humidity = "home/CO2/humidity";
-    const char *topic_resistance = getenv("MQTT_TOPIC_RESISTANCE");
-    if (!topic_resistance) topic_resistance = "home/CO2/resistance";
-
-	const char *topic_debug = getenv("MQTT_TOPIC_DEBUG");
-	if (!topic_debug) topic_debug = "home/CO2/debug";
-	const char *topic_pwm = getenv("MQTT_TOPIC_PWM");
-	if (!topic_pwm) topic_pwm = "home/CO2/pwm";
     char address[256];
     snprintf(address, sizeof(address), "tcp://%s:%s", brokername, portnumber);
 
@@ -419,6 +410,7 @@ int main(int argc, char *argv[])
     snprintf(discovery_payload, sizeof(discovery_payload),
              "{\"name\":\"%s VOC\","
              "\"state_topic\":\"%s\","
+             "\"value_template\":\"{{ value_json.voc }}\","
              "\"unit_of_measurement\":\"ppm\","
              "\"device_class\":\"volatile_organic_compounds_parts\","
              "\"unique_id\":\"%s_voc\","
@@ -437,9 +429,10 @@ int main(int argc, char *argv[])
     snprintf(humidity_disc_payload, sizeof(humidity_disc_payload),
              "{\"name\":\"%s Humidity\","
              "\"state_topic\":\"%s\","
+             "\"value_template\":\"{{ value_json.humidity }}\","
              "\"unique_id\":\"%s_humidity\","
              "%s}",
-             ha_device_name, topic_humidity, clientid, device_block);
+             ha_device_name, topicname, clientid, device_block);
     disc_msg.payload = humidity_disc_payload;
     disc_msg.payloadlen = (int)strlen(humidity_disc_payload);
     MQTTClient_publishMessage(client, humidity_disc_topic, &disc_msg, &disc_token);
@@ -453,10 +446,11 @@ int main(int argc, char *argv[])
     snprintf(resistance_disc_payload, sizeof(resistance_disc_payload),
              "{\"name\":\"%s Resistance\","
              "\"state_topic\":\"%s\","
+             "\"value_template\":\"{{ value_json.resistance }}\","
              "\"unit_of_measurement\":\"Ω\","
              "\"unique_id\":\"%s_resistance\","
              "%s}",
-             ha_device_name, topic_resistance, clientid, device_block);
+             ha_device_name, topicname, clientid, device_block);
     disc_msg.payload = resistance_disc_payload;
     disc_msg.payloadlen = (int)strlen(resistance_disc_payload);
     MQTTClient_publishMessage(client, resistance_disc_topic, &disc_msg, &disc_token);
