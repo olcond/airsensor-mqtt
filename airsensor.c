@@ -40,6 +40,7 @@ MQTTClient client;
 struct usb_dev_handle *devh;
 char device_serial[20] = "";
 char device_firmware[20] = "";
+char g_avail_topic[256] = "";
 
 /*
  * Parse an integer from a string with default and clamping.
@@ -98,8 +99,19 @@ void printout(char *str, int value) {
 
 void release_usb_device(int dummy) {
 	int ret;
+	(void)dummy;
 	ret = usb_release_interface(devh, 0);
 	usb_close(devh);
+	if (g_avail_topic[0]) {
+		MQTTClient_message msg = MQTTClient_message_initializer;
+		MQTTClient_deliveryToken tk;
+		msg.payload = "offline";
+		msg.payloadlen = 7;
+		msg.qos = QOS;
+		msg.retained = 1;
+		MQTTClient_publishMessage(client, g_avail_topic, &msg, &tk);
+		MQTTClient_waitForCompletion(client, tk, TIMEOUT);
+	}
     MQTTClient_disconnect(client, 10000);
     MQTTClient_destroy(&client);
 	exit(ret);
@@ -322,20 +334,42 @@ int main(int argc, char *argv[])
     snprintf(address, sizeof(address), "tcp://%s:%s", brokername, portnumber);
 
     MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
+    MQTTClient_willOptions will_opts = MQTTClient_willOptions_initializer;
     MQTTClient_message pubmsg = MQTTClient_message_initializer;
     MQTTClient_deliveryToken token;
     int rc;
+
+    char avail_topic[256];
+    snprintf(avail_topic, sizeof(avail_topic), "%s/availability", topicname);
+    snprintf(g_avail_topic, sizeof(g_avail_topic), "%s", avail_topic);
+    int expire_after = poll_interval * 3;
+
     MQTTClient_create(&client, address, clientid,
         MQTTCLIENT_PERSISTENCE_NONE, NULL);
     conn_opts.keepAliveInterval = 70;
     conn_opts.cleansession = 1;
     conn_opts.username = getenv("MQTT_USERNAME");
     conn_opts.password = getenv("MQTT_PASSWORD");
+
+    will_opts.topicName = avail_topic;
+    will_opts.message = "offline";
+    will_opts.qos = QOS;
+    will_opts.retained = 1;
+    conn_opts.will = &will_opts;
+
     if ((rc = MQTTClient_connect(client, &conn_opts)) != MQTTCLIENT_SUCCESS)
     {
         printf("Failed to connect, return code %d\n", rc);
         exit(EXIT_FAILURE);
     }
+
+    // Publish online availability (retained)
+    pubmsg.payload = "online";
+    pubmsg.payloadlen = 6;
+    pubmsg.qos = QOS;
+    pubmsg.retained = 1;
+    MQTTClient_publishMessage(client, avail_topic, &pubmsg, &token);
+    MQTTClient_waitForCompletion(client, token, TIMEOUT);
 
 	int ret, vendor, product, debug, counter, one_read;
 	int print_voc_only;
@@ -576,9 +610,13 @@ int main(int argc, char *argv[])
              "\"value_template\":\"{{ value_json.voc }}\","
              "\"unit_of_measurement\":\"ppm\","
              "\"device_class\":\"volatile_organic_compounds_parts\","
+             "\"state_class\":\"measurement\","
              "\"unique_id\":\"%s_voc\","
+             "\"availability_topic\":\"%s\","
+             "\"expire_after\":%d,"
              "%s}",
-             ha_device_name, topicname, clientid, device_block);
+             ha_device_name, topicname, clientid,
+             avail_topic, expire_after, device_block);
     disc_msg.payload = discovery_payload;
     disc_msg.payloadlen = (int)strlen(discovery_payload);
     MQTTClient_publishMessage(client, discovery_topic, &disc_msg, &disc_token);
@@ -594,9 +632,13 @@ int main(int argc, char *argv[])
              "\"state_topic\":\"%s\","
              "\"value_template\":\"{{ value_json.r_h }}\","
              "\"unit_of_measurement\":\"Ω\","
+             "\"state_class\":\"measurement\","
              "\"unique_id\":\"%s_rh\","
+             "\"availability_topic\":\"%s\","
+             "\"expire_after\":%d,"
              "%s}",
-             ha_device_name, topicname, clientid, device_block);
+             ha_device_name, topicname, clientid,
+             avail_topic, expire_after, device_block);
     disc_msg.payload = rh_disc_payload;
     disc_msg.payloadlen = (int)strlen(rh_disc_payload);
     MQTTClient_publishMessage(client, rh_disc_topic, &disc_msg, &disc_token);
@@ -612,9 +654,13 @@ int main(int argc, char *argv[])
              "\"state_topic\":\"%s\","
              "\"value_template\":\"{{ value_json.r_s }}\","
              "\"unit_of_measurement\":\"Ω\","
+             "\"state_class\":\"measurement\","
              "\"unique_id\":\"%s_rs\","
+             "\"availability_topic\":\"%s\","
+             "\"expire_after\":%d,"
              "%s}",
-             ha_device_name, topicname, clientid, device_block);
+             ha_device_name, topicname, clientid,
+             avail_topic, expire_after, device_block);
     disc_msg.payload = rs_disc_payload;
     disc_msg.payloadlen = (int)strlen(rs_disc_payload);
     MQTTClient_publishMessage(client, rs_disc_topic, &disc_msg, &disc_token);

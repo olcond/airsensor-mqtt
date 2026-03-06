@@ -372,53 +372,74 @@ static void build_discovery_topic(char *topic, size_t size,
 static void build_discovery_payload(char *payload, size_t size,
                                     const char *device_name,
                                     const char *state_topic,
-                                    const char *clientid) {
+                                    const char *clientid,
+                                    const char *avail_topic,
+                                    int expire_after) {
     snprintf(payload, size,
              "{\"name\":\"%s VOC\","
              "\"state_topic\":\"%s\","
              "\"value_template\":\"{{ value_json.voc }}\","
              "\"unit_of_measurement\":\"ppm\","
              "\"device_class\":\"volatile_organic_compounds_parts\","
+             "\"state_class\":\"measurement\","
              "\"unique_id\":\"%s_voc\","
+             "\"availability_topic\":\"%s\","
+             "\"expire_after\":%d,"
              "\"device\":{\"identifiers\":[\"%s\"],"
              "\"name\":\"%s\","
              "\"model\":\"USB VOC Sensor\","
              "\"manufacturer\":\"Atmel\"}}",
-             device_name, state_topic, clientid, clientid, device_name);
+             device_name, state_topic, clientid,
+             avail_topic, expire_after,
+             clientid, device_name);
 }
 
 static void build_rh_discovery_payload(char *payload, size_t size,
                                        const char *device_name,
                                        const char *state_topic,
-                                       const char *clientid) {
+                                       const char *clientid,
+                                       const char *avail_topic,
+                                       int expire_after) {
     snprintf(payload, size,
              "{\"name\":\"%s Heating Resistance\","
              "\"state_topic\":\"%s\","
              "\"value_template\":\"{{ value_json.r_h }}\","
              "\"unit_of_measurement\":\"Ω\","
+             "\"state_class\":\"measurement\","
              "\"unique_id\":\"%s_rh\","
+             "\"availability_topic\":\"%s\","
+             "\"expire_after\":%d,"
              "\"device\":{\"identifiers\":[\"%s\"],"
              "\"name\":\"%s\","
              "\"model\":\"USB VOC Sensor\","
              "\"manufacturer\":\"Atmel\"}}",
-             device_name, state_topic, clientid, clientid, device_name);
+             device_name, state_topic, clientid,
+             avail_topic, expire_after,
+             clientid, device_name);
 }
 
 static void build_rs_discovery_payload(char *payload, size_t size,
                                        const char *device_name,
                                        const char *state_topic,
-                                       const char *clientid) {
+                                       const char *clientid,
+                                       const char *avail_topic,
+                                       int expire_after) {
     snprintf(payload, size,
              "{\"name\":\"%s Sensor Resistance\","
              "\"state_topic\":\"%s\","
              "\"value_template\":\"{{ value_json.r_s }}\","
              "\"unit_of_measurement\":\"Ω\","
+             "\"state_class\":\"measurement\","
              "\"unique_id\":\"%s_rs\","
+             "\"availability_topic\":\"%s\","
+             "\"expire_after\":%d,"
              "\"device\":{\"identifiers\":[\"%s\"],"
              "\"name\":\"%s\","
              "\"model\":\"USB VOC Sensor\","
              "\"manufacturer\":\"Atmel\"}}",
-             device_name, state_topic, clientid, clientid, device_name);
+             device_name, state_topic, clientid,
+             avail_topic, expire_after,
+             clientid, device_name);
 }
 
 static void suite_ha_discovery(void) {
@@ -440,9 +461,10 @@ static void suite_ha_discovery(void) {
 
     char payload[1024];
 
-    /* VOC discovery payload */
+    /* VOC discovery payload — default poll_interval=30 → expire_after=90 */
     build_discovery_payload(payload, sizeof(payload),
-                            "Air Sensor", "home/CO2/state", "airsensor");
+                            "Air Sensor", "home/CO2/state", "airsensor",
+                            "home/CO2/state/availability", 90);
     TEST("VOC payload contains state_topic",
          strstr(payload, "\"state_topic\":\"home/CO2/state\"") != NULL);
     TEST("VOC payload contains value_template for voc",
@@ -451,32 +473,59 @@ static void suite_ha_discovery(void) {
          strstr(payload, "\"unit_of_measurement\":\"ppm\"") != NULL);
     TEST("VOC payload contains device_class",
          strstr(payload, "\"device_class\":\"volatile_organic_compounds_parts\"") != NULL);
+    TEST("VOC payload contains state_class measurement",
+         strstr(payload, "\"state_class\":\"measurement\"") != NULL);
     TEST("VOC payload contains unique_id",
          strstr(payload, "\"unique_id\":\"airsensor_voc\"") != NULL);
+    TEST("VOC payload contains availability_topic",
+         strstr(payload, "\"availability_topic\":\"home/CO2/state/availability\"") != NULL);
+    TEST("VOC payload contains expire_after 90",
+         strstr(payload, "\"expire_after\":90") != NULL);
 
     /* r_h (heating resistance) discovery payload */
     build_rh_discovery_payload(payload, sizeof(payload),
-                               "Air Sensor", "home/CO2/state", "airsensor");
+                               "Air Sensor", "home/CO2/state", "airsensor",
+                               "home/CO2/state/availability", 90);
     TEST("r_h payload contains name 'Heating Resistance'",
          strstr(payload, "\"name\":\"Air Sensor Heating Resistance\"") != NULL);
     TEST("r_h payload contains value_template for r_h",
          strstr(payload, "\"value_template\":\"{{ value_json.r_h }}\"") != NULL);
     TEST("r_h payload contains unit Ω",
          strstr(payload, "\"unit_of_measurement\":\"Ω\"") != NULL);
+    TEST("r_h payload contains state_class measurement",
+         strstr(payload, "\"state_class\":\"measurement\"") != NULL);
     TEST("r_h payload contains unique_id airsensor_rh",
          strstr(payload, "\"unique_id\":\"airsensor_rh\"") != NULL);
+    TEST("r_h payload contains availability_topic",
+         strstr(payload, "\"availability_topic\":\"home/CO2/state/availability\"") != NULL);
+    TEST("r_h payload contains expire_after",
+         strstr(payload, "\"expire_after\":90") != NULL);
 
     /* r_s (sensor resistance) discovery payload */
     build_rs_discovery_payload(payload, sizeof(payload),
-                               "Air Sensor", "home/CO2/state", "airsensor");
+                               "Air Sensor", "home/CO2/state", "airsensor",
+                               "home/CO2/state/availability", 90);
     TEST("r_s payload contains name 'Sensor Resistance'",
          strstr(payload, "\"name\":\"Air Sensor Sensor Resistance\"") != NULL);
     TEST("r_s payload contains value_template for r_s",
          strstr(payload, "\"value_template\":\"{{ value_json.r_s }}\"") != NULL);
     TEST("r_s payload contains unit Ω",
          strstr(payload, "\"unit_of_measurement\":\"Ω\"") != NULL);
+    TEST("r_s payload contains state_class measurement",
+         strstr(payload, "\"state_class\":\"measurement\"") != NULL);
     TEST("r_s payload contains unique_id airsensor_rs",
          strstr(payload, "\"unique_id\":\"airsensor_rs\"") != NULL);
+    TEST("r_s payload contains availability_topic",
+         strstr(payload, "\"availability_topic\":\"home/CO2/state/availability\"") != NULL);
+    TEST("r_s payload contains expire_after",
+         strstr(payload, "\"expire_after\":90") != NULL);
+
+    /* expire_after scales with poll_interval */
+    build_discovery_payload(payload, sizeof(payload),
+                            "Air Sensor", "home/CO2/state", "airsensor",
+                            "home/CO2/state/availability", 300);
+    TEST("VOC expire_after 300 for poll_interval=100",
+         strstr(payload, "\"expire_after\":300") != NULL);
 }
 
 /* --- *IDN? response parsing ---------------------------------------------- */
