@@ -353,6 +353,7 @@ static void build_discovery_payload(char *payload, size_t size,
     snprintf(payload, size,
              "{\"name\":\"%s VOC\","
              "\"state_topic\":\"%s\","
+             "\"value_template\":\"{{ value_json.voc }}\","
              "\"unit_of_measurement\":\"ppm\","
              "\"device_class\":\"volatile_organic_compounds_parts\","
              "\"unique_id\":\"%s_voc\","
@@ -390,6 +391,7 @@ static void build_humidity_discovery_payload(char *payload, size_t size,
     snprintf(payload, size,
              "{\"name\":\"%s Humidity\","
              "\"state_topic\":\"%s\","
+             "\"value_template\":\"{{ value_json.humidity }}\","
              "\"unique_id\":\"%s_humidity\","
              "%s}",
              device_name, state_topic, clientid, device_block);
@@ -422,7 +424,8 @@ static void build_resistance_discovery_payload(char *payload, size_t size,
     snprintf(payload, size,
              "{\"name\":\"%s Resistance\","
              "\"state_topic\":\"%s\","
-             "\"unit_of_measurement\":\"Ohm\","
+             "\"value_template\":\"{{ value_json.resistance }}\","
+             "\"unit_of_measurement\":\"Ω\","
              "\"unique_id\":\"%s_resistance\","
              "%s}",
              device_name, state_topic, clientid, device_block);
@@ -456,6 +459,8 @@ static void suite_ha_discovery(void) {
 
     TEST("payload contains state_topic",
          strstr(payload, "\"state_topic\":\"home/CO2/voc\"") != NULL);
+    TEST("payload contains value_template for voc",
+         strstr(payload, "\"value_template\":\"{{ value_json.voc }}\"") != NULL);
     TEST("payload contains unit ppm",
          strstr(payload, "\"unit_of_measurement\":\"ppm\"") != NULL);
     TEST("payload contains device_class",
@@ -477,23 +482,27 @@ static void suite_extended_ha_discovery(void) {
 
     /* Humidity discovery without device info */
     build_humidity_discovery_payload(payload, sizeof(payload),
-                                     "Air Sensor", "home/CO2/humidity",
+                                     "Air Sensor", "home/CO2/voc",
                                      "airsensor", "", "");
     TEST("humidity payload contains name",
          strstr(payload, "\"name\":\"Air Sensor Humidity\"") != NULL);
     TEST("humidity payload contains unique_id",
          strstr(payload, "\"unique_id\":\"airsensor_humidity\"") != NULL);
-    TEST("humidity payload contains state_topic",
-         strstr(payload, "\"state_topic\":\"home/CO2/humidity\"") != NULL);
+    TEST("humidity payload contains state_topic (main topic)",
+         strstr(payload, "\"state_topic\":\"home/CO2/voc\"") != NULL);
+    TEST("humidity payload contains value_template",
+         strstr(payload, "\"value_template\":\"{{ value_json.humidity }}\"") != NULL);
 
     /* Resistance discovery with device info */
     build_resistance_discovery_payload(payload, sizeof(payload),
-                                       "Air Sensor", "home/CO2/resistance",
+                                       "Air Sensor", "home/CO2/voc",
                                        "airsensor", "ABC123", "1.12p5");
     TEST("resistance payload contains name",
          strstr(payload, "\"name\":\"Air Sensor Resistance\"") != NULL);
-    TEST("resistance payload contains unit Ohm",
-         strstr(payload, "\"unit_of_measurement\":\"Ohm\"") != NULL);
+    TEST("resistance payload contains unit Ω",
+         strstr(payload, "\"unit_of_measurement\":\"Ω\"") != NULL);
+    TEST("resistance payload contains value_template",
+         strstr(payload, "\"value_template\":\"{{ value_json.resistance }}\"") != NULL);
     TEST("resistance payload contains serial_number",
          strstr(payload, "\"serial_number\":\"ABC123\"") != NULL);
     TEST("resistance payload contains sw_version",
