@@ -89,13 +89,14 @@ Die gesamte MQTT-Konfiguration erfolgt ueber Umgebungsvariablen. Alle Variablen 
 | `MQTT_BROKERNAME` | Hostname oder IP-Adresse des MQTT-Brokers | `127.0.0.1` |
 | `MQTT_PORT` | Port des MQTT-Brokers | `1883` |
 | `MQTT_CLIENTID` | Client-ID fuer die MQTT-Verbindung | `airsensor` |
-| `MQTT_TOPIC` | MQTT-Topic fuer VOC-Messwerte | `home/CO2/voc` |
+| `MQTT_TOPIC` | MQTT-Topic fuer Sensordaten (JSON) | `home/CO2/voc` |
 | `MQTT_USERNAME` | Benutzername fuer MQTT-Authentifizierung (optional) | _(keiner)_ |
 | `MQTT_PASSWORD` | Passwort fuer MQTT-Authentifizierung (optional) | _(keines)_ |
-| `MQTT_TOPIC_HUMIDITY` | MQTT-Topic fuer Luftfeuchtigkeit | `home/CO2/humidity` |
-| `MQTT_TOPIC_RESISTANCE` | MQTT-Topic fuer Sensorwiderstand | `home/CO2/resistance` |
 | `HA_DISCOVERY_PREFIX` | Praefix fuer Home Assistant Auto-Discovery | `homeassistant` |
 | `HA_DEVICE_NAME` | Geraetenamen im Home Assistant | `Air Sensor` |
+| `POLL_INTERVAL` | Messintervall in Sekunden (10--3600) | `30` |
+| `USB_TIMEOUT` | USB-Timeout in Millisekunden (250--10000) | `1000` |
+| `MAX_RETRIES` | Maximale USB-Fehler vor Reconnect (1--20) | `3` |
 
 ## Benutzung
 
@@ -155,13 +156,12 @@ services:
       MQTT_BROKERNAME: "192.168.1.10"
       MQTT_PORT: "1883"
       MQTT_CLIENTID: "airsensor"
-      MQTT_TOPIC: "home/CO2/voc"
+      MQTT_TOPIC: "home/CO2/state"
       MQTT_USERNAME: ""
       MQTT_PASSWORD: ""
-      MQTT_TOPIC_HUMIDITY: "home/CO2/humidity"
-      MQTT_TOPIC_RESISTANCE: "home/CO2/resistance"
       HA_DISCOVERY_PREFIX: "homeassistant"
       HA_DEVICE_NAME: "Air Sensor"
+      POLL_INTERVAL: "30"
 ```
 
 > **Hinweis:** Der Container benoetigt Zugriff auf den USB-Bus (`/dev/bus/usb`). Alternativ kann auch nur das spezifische USB-Geraet durchgereicht werden, z.B. `/dev/bus/usb/001/005`.
@@ -179,13 +179,17 @@ Der Sensor liefert VOC-Werte im Bereich von **450 bis 2000 ppm** (laut Spezifika
 | 1000--1500 | Maessig |
 | 1500--2000 | Schlecht |
 
-### Luftfeuchtigkeit
+### Sensordaten
 
-Der Sensor liefert einen relativen Luftfeuchtigkeitswert als Rohwert (1 Byte, 0--255). Dieser wird auf dem Topic `MQTT_TOPIC_HUMIDITY` publiziert.
+Der Sensor liefert folgende Messwerte in einem 16-Byte USB-Response (Little-Endian):
 
-### Sensorwiderstand
-
-Der Sensorwiderstand wird als 32-Bit-Ganzzahl (Little-Endian) aus der USB-Antwort extrahiert und in Ohm auf dem Topic `MQTT_TOPIC_RESISTANCE` publiziert.
+| Wert | Bytes | Beschreibung |
+|------|-------|-------------|
+| VOC | 2--3 | Volatile Organic Compounds in ppm |
+| Debug | 4--5 | Interner Debug-Wert |
+| PWM | 6--7 | Heizungs-PWM-Wert |
+| r_h | 8--9 | Heizungswiderstand (Rohwert ÷ 100 = Ω) |
+| r_s | 12--14 | Sensorwiderstand (24-Bit, in Ω) |
 
 ### Ausgabeformat
 
@@ -211,16 +215,27 @@ Bei Werten ausserhalb des Bereichs wird `0` ausgegeben.
 
 ### MQTT-Nachricht
 
-Der Messwert wird als einfacher ASCII-String auf das konfigurierte Topic publiziert:
+Alle Messwerte werden als JSON-Objekt auf das konfigurierte Topic publiziert:
 
 - **Topic:** konfigurierbar ueber `MQTT_TOPIC`
-- **Payload:** VOC-Wert als Zahl (z.B. `523`)
+- **Payload:** JSON, z.B. `{"voc":523,"r_h":382.21,"r_s":8900110,"debug":736,"pwm":10}`
 - **QoS:** 1 (mindestens einmal zugestellt)
 - **Retained:** Nein
 
+### Verfuegbarkeit (Availability)
+
+Der Sensor publiziert seinen Online-Status auf `{MQTT_TOPIC}/availability`:
+
+- `online` — nach erfolgreicher MQTT-Verbindung
+- `offline` — bei sauberem Herunterfahren oder Verbindungsverlust (via MQTT Last Will and Testament)
+
 ### Messintervall
 
-Im Dauerbetrieb wird alle **30 Sekunden** ein neuer Messwert gelesen und publiziert.
+Im Dauerbetrieb wird standardmaessig alle **30 Sekunden** ein neuer Messwert gelesen und publiziert. Das Intervall ist ueber `POLL_INTERVAL` konfigurierbar (10--3600 Sekunden).
+
+### Robustheit
+
+Bei USB-Kommunikationsfehlern versucht das Programm automatisch einen erneuten Leseversuch. Nach `MAX_RETRIES` aufeinanderfolgenden Fehlern wird die USB-Verbindung getrennt und neu aufgebaut.
 
 ## Integration in Heimautomatisierung
 
@@ -228,12 +243,12 @@ Im Dauerbetrieb wird alle **30 Sekunden** ein neuer Messwert gelesen und publizi
 
 #### Auto-Discovery (empfohlen)
 
-Der Sensor unterstuetzt **MQTT Auto-Discovery** fuer Home Assistant. Beim Start wird automatisch eine Konfigurationsnachricht auf das Discovery-Topic publiziert, sodass Home Assistant den Sensor ohne manuelle Konfiguration erkennt und einbindet.
+Der Sensor unterstuetzt **MQTT Auto-Discovery** fuer Home Assistant. Beim Start werden automatisch Konfigurationsnachrichten auf die Discovery-Topics publiziert, sodass Home Assistant den Sensor ohne manuelle Konfiguration erkennt und einbindet.
 
 Das Discovery-Topic hat das Format:
 
 ```
-{HA_DISCOVERY_PREFIX}/sensor/{MQTT_CLIENTID}/config
+{HA_DISCOVERY_PREFIX}/sensor/{MQTT_CLIENTID}[_suffix]/config
 ```
 
 **Beispiel** mit Standardwerten:
@@ -242,15 +257,37 @@ Das Discovery-Topic hat das Format:
 homeassistant/sensor/airsensor/config
 ```
 
-Beim Start werden drei Discovery-Nachrichten publiziert -- fuer VOC, Luftfeuchtigkeit und Sensorwiderstand. Die VOC-Konfiguration sieht beispielsweise so aus:
+Beim Start werden Discovery-Nachrichten fuer folgende Entitaeten publiziert:
+
+| Entitaet | Suffix | Beschreibung |
+|----------|--------|-------------|
+| VOC | _(keiner)_ | Volatile Organic Compounds (ppm) |
+| Heating Resistance | `_rh` | Heizungswiderstand (Ω) |
+| Sensor Resistance | `_rs` | Sensorwiderstand (Ω) |
+| Warmup | `_warmup` | Aufwaermzeit (min, diagnostisch) |
+| Warn Threshold 1 | `_warn1` | Warnschwelle 1 (ppm, diagnostisch) |
+| Warn Threshold 2 | `_warn2` | Warnschwelle 2 (ppm, diagnostisch) |
+
+Die Mess-Entitaeten (VOC, r_h, r_s) enthalten:
+- `state_class: measurement` fuer Langzeitstatistiken
+- `availability_topic` fuer Online/Offline-Erkennung
+- `expire_after` (3× Messintervall) zum automatischen Markieren als unverfuegbar
+
+Die diagnostischen Entitaeten (Warmup, Warn-Schwellen) werden nur publiziert, wenn der Sensor die entsprechenden Abfragen (`FLAGGET?`, `KNOBPRE?`) unterstuetzt.
+
+Die VOC-Discovery-Konfiguration sieht beispielsweise so aus:
 
 ```json
 {
   "name": "Air Sensor VOC",
   "state_topic": "home/CO2/voc",
+  "value_template": "{{ value_json.voc }}",
   "unit_of_measurement": "ppm",
   "device_class": "volatile_organic_compounds_parts",
+  "state_class": "measurement",
   "unique_id": "airsensor_voc",
+  "availability_topic": "home/CO2/voc/availability",
+  "expire_after": 90,
   "device": {
     "identifiers": ["airsensor"],
     "name": "Air Sensor",
@@ -283,8 +320,11 @@ mqtt:
   sensor:
     - name: "Luftqualitaet VOC"
       state_topic: "home/CO2/voc"
+      value_template: "{{ value_json.voc }}"
       unit_of_measurement: "ppm"
       device_class: volatile_organic_compounds_parts
+      state_class: measurement
+      availability_topic: "home/CO2/voc/availability"
       icon: "mdi:air-filter"
 ```
 
@@ -360,7 +400,7 @@ Alle Umgebungsvariablen haben Standardwerte und sind optional. Falls dennoch ein
 
 ### Projektstruktur
 
-Das gesamte Programm besteht aus einer einzigen Quelldatei (`airsensor.c`, ~520 Zeilen). Unit-Tests befinden sich in `tests/test_airsensor.c` und koennen ohne Hardware ausgefuehrt werden (`make test`).
+Das gesamte Programm besteht aus einer einzigen Quelldatei (`airsensor.c`, ~930 Zeilen). Unit-Tests (164 Assertions) befinden sich in `tests/test_airsensor.c` und koennen ohne Hardware ausgefuehrt werden (`make test`).
 
 ### Kompilieren und testen
 
