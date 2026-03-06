@@ -41,6 +41,35 @@ struct usb_dev_handle *devh;
 char device_serial[20] = "";
 char device_firmware[20] = "";
 
+/*
+ * Parse an integer from a string with default and clamping.
+ */
+static int parse_env_int(const char *val, int default_val, int min_val, int max_val) {
+    if (!val || val[0] == '\0') return default_val;
+    int v = atoi(val);
+    if (v < min_val) return min_val;
+    if (v > max_val) return max_val;
+    return v;
+}
+
+/*
+ * Poll command sequence number (FHEM CO20 protocol).
+ * Range 0x67–0xFF, wraps back to 0x67.
+ */
+static unsigned char poll_seq = 0x67;
+
+static unsigned char next_poll_seq(unsigned char current) {
+    return (current < 0xFF) ? (unsigned char)(current + 1) : 0x67;
+}
+
+static void build_poll_command(unsigned char seq, char *cmd) {
+    cmd[0] = '@';
+    cmd[1] = (char)seq;
+    cmd[2] = '*'; cmd[3] = 'T'; cmd[4] = 'R';
+    cmd[5] = '\n';
+    for (int i = 6; i < 16; i++) cmd[i] = '@';
+}
+
 void help() {
 
 	printf("AirSensor [options]\n");
@@ -163,19 +192,19 @@ static int parse_firmware_from_idn_response(const char *response,
  * Reads the response into resp_buf (null-terminated string).
  * Returns 0 on success, -1 on failure.
  */
-int query_device_id(struct usb_dev_handle *handle, char *resp_buf, size_t resp_size) {
+int query_device_id(struct usb_dev_handle *handle, char *resp_buf, size_t resp_size, int timeout_ms) {
     static unsigned short idn_seq = 1;
     char cmd[17];
     snprintf(cmd, sizeof(cmd), "@%04X*IDN?\n@@@@@", idn_seq);
     idn_seq = (idn_seq < 0xFFFF) ? (unsigned short)(idn_seq + 1) : 1;
-    int ret = usb_interrupt_write(handle, 0x00000002, cmd, 16, 1000);
+    int ret = usb_interrupt_write(handle, 0x00000002, cmd, 16, timeout_ms);
     if (ret < 0) return -1;
 
     size_t total = 0;
     char chunk[16];
     int attempts = 0;
     while (total < resp_size - 1 && attempts < 10) {
-        ret = usb_interrupt_read(handle, 0x00000081, chunk, 16, 1000);
+        ret = usb_interrupt_read(handle, 0x00000081, chunk, 16, timeout_ms);
         if (ret <= 0) break;
         int start = (attempts == 0) ? 1 : 0;
         for (int i = start; i < ret && total < resp_size - 1; i++) {
@@ -202,6 +231,9 @@ int main(int argc, char *argv[])
     if (!ha_prefix) ha_prefix = "homeassistant";
     const char *ha_device_name = getenv("HA_DEVICE_NAME");
     if (!ha_device_name) ha_device_name = "Air Sensor";
+    int poll_interval = parse_env_int(getenv("POLL_INTERVAL"), 30, 10, 3600);
+    int usb_timeout = parse_env_int(getenv("USB_TIMEOUT"), 1000, 250, 10000);
+    int max_retries = parse_env_int(getenv("MAX_RETRIES"), 3, 1, 20);
     char address[256];
     snprintf(address, sizeof(address), "tcp://%s:%s", brokername, portnumber);
 
@@ -334,7 +366,7 @@ int main(int argc, char *argv[])
 	if (debug == 1)
 		printout("DEBUG: Read any remaining data from USB", 0);
 
-	ret = usb_interrupt_read(devh, 0x00000081, buf, 0x0000010, 1000);
+	ret = usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
 
 	if (debug == 1)
 		printout("DEBUG: Return code from USB read: ", ret);
@@ -342,7 +374,7 @@ int main(int argc, char *argv[])
 	/* Query device identification (*IDN?) for serial and firmware */
 	{
 		char idn_response[256];
-		if (query_device_id(devh, idn_response, sizeof(idn_response)) == 0) {
+		if (query_device_id(devh, idn_response, sizeof(idn_response), usb_timeout) == 0) {
 
 			parse_serial_from_idn_response(idn_response,
 			                               device_serial,
@@ -376,7 +408,7 @@ int main(int argc, char *argv[])
 				printout("DEBUG: *IDN? query failed, continuing without device info", 0);
 		}
 		/* Flush any remaining data */
-		usb_interrupt_read(devh, 0x00000081, buf, 0x0000010, 1000);
+		usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
 	}
 
     // Publish Home Assistant MQTT auto-discovery configuration
@@ -459,22 +491,69 @@ int main(int argc, char *argv[])
     MQTTClient_publishMessage(client, rs_disc_topic, &disc_msg, &disc_token);
     MQTTClient_waitForCompletion(client, disc_token, TIMEOUT);
 
+	int fail_count = 0;
+
 	while(rc==MQTTCLIENT_SUCCESS) {
 
 		time_t t = time(NULL);
 		struct tm tm;
 		localtime_r(&t, &tm);
 
-		// USB COMMAND TO REQUEST DATA
- 		// @h*TR
+		// Build poll command with sequence number (FHEM protocol)
 		if (debug == 1)
 			printout("DEBUG: Write data to device", 0);
 
-		memcpy(buf, "\x40\x68\x2a\x54\x52\x0a\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40", 0x0000010);
-		ret = usb_interrupt_write(devh, 0x00000002, buf, 0x0000010, 1000);
+		char poll_cmd[16];
+		build_poll_command(poll_seq, poll_cmd);
+		poll_seq = next_poll_seq(poll_seq);
+		ret = usb_interrupt_write(devh, 0x00000002, poll_cmd, 16, usb_timeout);
 
 		if (debug == 1)
 			printout("DEBUG: Return code from USB write: ", ret);
+
+		if (ret != 16) {
+			fail_count++;
+			if (debug == 1)
+				printout("DEBUG: Write failed, fail_count: ", fail_count);
+			if (fail_count >= max_retries) {
+				printout("ERROR: Max retries reached, reconnecting USB", 0);
+				usb_release_interface(devh, 0);
+				usb_close(devh);
+				fail_count = 0;
+				// Re-open device
+				usb_find_busses();
+				usb_find_devices();
+				dev = find_device(vendor, product);
+				if (!dev) {
+					printout("Error: Device not found on reconnect", 0);
+					MQTTClient_disconnect(client, 10000);
+					MQTTClient_destroy(&client);
+					exit(1);
+				}
+				devh = usb_open(dev);
+				if (!devh) {
+					printout("Error: Failed to reopen USB device", 0);
+					MQTTClient_disconnect(client, 10000);
+					MQTTClient_destroy(&client);
+					exit(1);
+				}
+				ret = usb_get_driver_np(devh, 0, buf, sizeof(buf));
+				if (ret == 0)
+					usb_detach_kernel_driver_np(devh, 0);
+				ret = usb_claim_interface(devh, 0);
+				if (ret != 0) {
+					printout("Error: claim failed on reconnect: ", ret);
+					usb_close(devh);
+					MQTTClient_disconnect(client, 10000);
+					MQTTClient_destroy(&client);
+					exit(1);
+				}
+				printout("INFO: USB reconnect successful", 0);
+				usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
+			}
+			sleep(poll_interval);
+			continue;
+		}
 
 		if (debug == 1)
 			printout("DEBUG: Read USB (Chunk 1 of 3)", 0);
@@ -482,42 +561,49 @@ int main(int argc, char *argv[])
 		unsigned char fullbuf[48];
 		memset(fullbuf, 0, 48);
 
-		ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 0x0000010, 1000);
+		ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 16, usb_timeout);
 		if (debug == 1)
 			printout("DEBUG: Return code from USB read 1: ", ret);
 
 		if (ret == 0) {
 			sleep(1);
-			ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 0x0000010, 1000);
+			ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 16, usb_timeout);
 			if (debug == 1) printout("DEBUG: Return code from USB read 1 (retry): ", ret);
 		}
-		
+
 		if (ret == 16) {
-			// Try to read the remaining 2 chunks to get full 48 bytes
-			int ret2 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 16, 0x0000010, 1000);
+			int ret2 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 16, 16, usb_timeout);
 			if (debug == 1) printout("DEBUG: Return code from USB read 2: ", ret2);
 			if (ret2 == 16) {
-				int ret3 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 32, 0x0000010, 1000);
+				int ret3 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 32, 16, usb_timeout);
 				if (debug == 1) printout("DEBUG: Return code from USB read 3: ", ret3);
 			}
 		}
 
 		if ( !((ret == 0) || (ret == 16)))
 		{
+			fail_count++;
+			if (debug == 1)
+				printout("DEBUG: Read failed, fail_count: ", fail_count);
 			if (print_voc_only == 1) {
 				printf("0\n");
 			} else {
 				printout("ERROR: Invalid result code: ", ret);
 			}
+			sleep(poll_interval);
+			continue;
 		}
+
+		// Successful read — reset fail counter
+		fail_count = 0;
 
 		memcpy(&iresult, fullbuf+2, 2);
 		voc = le16toh(iresult);
-		
+
 		unsigned short debug_val = 0;
 		memcpy(&debug_val, fullbuf+4, 2);
 		debug_val = le16toh(debug_val);
-		
+
 		unsigned short pwm_val = 0;
 		memcpy(&pwm_val, fullbuf+6, 2);
 		pwm_val = le16toh(pwm_val);
@@ -540,13 +626,10 @@ int main(int argc, char *argv[])
 			printout("DEBUG: Read USB [flush]", 0);
 		}
 
-		ret = usb_interrupt_read(devh, 0x00000081, buf, 0x0000010, 1000);
+		ret = usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
 
 		if (debug == 1)
 			printout("DEBUG: Return code from USB read: ", ret);
-
- 		// According to AppliedSensor specifications the output range is between 450 and 2000
- 		// So only printout values between this range
 
 		if ( voc >= 450 && voc <= 15001) {
 			if (print_voc_only == 1) {
@@ -560,7 +643,7 @@ int main(int argc, char *argv[])
             snprintf(json_payload, sizeof(json_payload),
                 "{\"voc\":%u,\"r_h\":%.2f,\"r_s\":%u,\"debug\":%u,\"pwm\":%u}",
                 voc, rh_raw / 100.0, r_s, debug_val, pwm_val);
-            
+
             pubmsg.payload = json_payload;
             pubmsg.payloadlen = strlen(json_payload);
             pubmsg.qos = QOS;
@@ -580,12 +663,10 @@ int main(int argc, char *argv[])
 			}
 		}
 
-		// If one read, then exit
 		if (one_read == 1)
 			exit(0);
 
-		// Wait for next request for data
-		sleep(30);
+		sleep(poll_interval);
 
 	}
 

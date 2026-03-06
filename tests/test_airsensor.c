@@ -14,6 +14,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* --------------------------------------------------------------------------
@@ -557,6 +558,116 @@ static void suite_json_payload(void) {
     TEST("json does NOT contain humidity", strstr(json, "humidity") == NULL);
 }
 
+/* --- Poll command with sequence numbers ---------------------------------- */
+
+/*
+ * Build a TRF? poll command with sequence number (per FHEM CO20 protocol).
+ * Format: "@" + seq_byte + "*TRF?\n" + "@" padding to 16 bytes.
+ * FHEM uses seq range 0x67–0xFF, wrapping back to 0x67.
+ */
+static void build_poll_command(unsigned char seq, char *cmd) {
+    cmd[0] = '@';
+    cmd[1] = (char)seq;
+    cmd[2] = '*'; cmd[3] = 'T'; cmd[4] = 'R';
+    cmd[5] = '\n';
+    for (int i = 6; i < 16; i++) cmd[i] = '@';
+}
+
+static unsigned char next_poll_seq(unsigned char current) {
+    return (current < 0xFF) ? (unsigned char)(current + 1) : 0x67;
+}
+
+static void suite_poll_command(void) {
+    print_header("Poll command with sequence numbers");
+
+    char cmd[16];
+
+    /* Initial sequence 0x67 */
+    build_poll_command(0x67, cmd);
+    TEST("cmd[0] is '@'", cmd[0] == '@');
+    TEST("cmd[1] is seq 0x67", (unsigned char)cmd[1] == 0x67);
+    TEST("cmd[2..4] is '*TR'", cmd[2] == '*' && cmd[3] == 'T' && cmd[4] == 'R');
+    TEST("cmd[5] is newline", cmd[5] == '\n');
+    TEST("cmd[6..15] is '@' padding", cmd[6] == '@' && cmd[15] == '@');
+
+    /* Different sequence */
+    build_poll_command(0xAB, cmd);
+    TEST("cmd[1] is seq 0xAB", (unsigned char)cmd[1] == 0xAB);
+
+    /* Sequence increment */
+    TEST("seq 0x67 → 0x68", next_poll_seq(0x67) == 0x68);
+    TEST("seq 0xFE → 0xFF", next_poll_seq(0xFE) == 0xFF);
+    TEST("seq 0xFF wraps to 0x67", next_poll_seq(0xFF) == 0x67);
+
+    /* Full cycle: 0x67 through 0xFF is 153 values */
+    unsigned char seq = 0x67;
+    int count = 0;
+    do {
+        seq = next_poll_seq(seq);
+        count++;
+    } while (seq != 0x67);
+    TEST("full sequence cycle is 153 steps", count == 153);
+}
+
+/* --- Environment variable parsing with bounds ---------------------------- */
+
+static int parse_env_int(const char *val, int default_val, int min_val, int max_val) {
+    if (!val || val[0] == '\0') return default_val;
+    int v = atoi(val);
+    if (v < min_val) return min_val;
+    if (v > max_val) return max_val;
+    return v;
+}
+
+static void suite_env_parsing(void) {
+    print_header("Environment variable parsing with bounds");
+
+    /* Poll interval: default 30, min 10, max 3600 */
+    TEST("poll interval: NULL → default 30", parse_env_int(NULL, 30, 10, 3600) == 30);
+    TEST("poll interval: empty → default 30", parse_env_int("", 30, 10, 3600) == 30);
+    TEST("poll interval: '60' → 60", parse_env_int("60", 30, 10, 3600) == 60);
+    TEST("poll interval: '5' → clamped to 10", parse_env_int("5", 30, 10, 3600) == 10);
+    TEST("poll interval: '9999' → clamped to 3600", parse_env_int("9999", 30, 10, 3600) == 3600);
+    TEST("poll interval: '10' → boundary 10", parse_env_int("10", 30, 10, 3600) == 10);
+    TEST("poll interval: '3600' → boundary 3600", parse_env_int("3600", 30, 10, 3600) == 3600);
+
+    /* USB timeout: default 1000, min 250, max 10000 */
+    TEST("usb timeout: NULL → default 1000", parse_env_int(NULL, 1000, 250, 10000) == 1000);
+    TEST("usb timeout: '500' → 500", parse_env_int("500", 1000, 250, 10000) == 500);
+    TEST("usb timeout: '100' → clamped to 250", parse_env_int("100", 1000, 250, 10000) == 250);
+    TEST("usb timeout: '20000' → clamped to 10000", parse_env_int("20000", 1000, 250, 10000) == 10000);
+
+    /* Max retries: default 3, min 1, max 20 */
+    TEST("max retries: NULL → default 3", parse_env_int(NULL, 3, 1, 20) == 3);
+    TEST("max retries: '5' → 5", parse_env_int("5", 3, 1, 20) == 5);
+    TEST("max retries: '0' → clamped to 1", parse_env_int("0", 3, 1, 20) == 1);
+    TEST("max retries: '50' → clamped to 20", parse_env_int("50", 3, 1, 20) == 20);
+}
+
+/* --- Retry / reconnect logic --------------------------------------------- */
+
+/*
+ * Returns 1 if we should attempt a reconnect (fail_count >= max_retries).
+ * Returns 0 if we should just retry.
+ */
+static int should_reconnect(int fail_count, int max_retries) {
+    return (fail_count >= max_retries) ? 1 : 0;
+}
+
+static void suite_retry_logic(void) {
+    print_header("Retry / reconnect decision logic");
+
+    TEST("fail=0, max=3 → retry",     should_reconnect(0, 3) == 0);
+    TEST("fail=1, max=3 → retry",     should_reconnect(1, 3) == 0);
+    TEST("fail=2, max=3 → retry",     should_reconnect(2, 3) == 0);
+    TEST("fail=3, max=3 → reconnect", should_reconnect(3, 3) == 1);
+    TEST("fail=4, max=3 → reconnect", should_reconnect(4, 3) == 1);
+    TEST("fail=1, max=1 → reconnect", should_reconnect(1, 1) == 1);
+    TEST("fail=0, max=1 → retry",     should_reconnect(0, 1) == 0);
+    TEST("fail=19, max=20 → retry",   should_reconnect(19, 20) == 0);
+    TEST("fail=20, max=20 → reconnect", should_reconnect(20, 20) == 1);
+}
+
 /* --- svoc buffer size ---------------------------------------------------- */
 
 static void suite_svoc_buffer(void) {
@@ -597,6 +708,9 @@ int main(void) {
     suite_ha_discovery();
     suite_idn_parsing();
     suite_json_payload();
+    suite_poll_command();
+    suite_env_parsing();
+    suite_retry_logic();
     suite_svoc_buffer();
 
     printf("\n====================\n");
