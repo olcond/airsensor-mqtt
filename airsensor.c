@@ -328,8 +328,8 @@ int main(int argc, char *argv[])
 
 	unsigned short iresult=0;
 	unsigned short voc=0;
-	unsigned char humidity_raw = 0;
-	unsigned int resistance = 0;
+	unsigned short rh_raw = 0;
+	unsigned int r_s = 0;
 
 	if (debug == 1)
 		printout("DEBUG: Read any remaining data from USB", 0);
@@ -423,39 +423,40 @@ int main(int argc, char *argv[])
     MQTTClient_publishMessage(client, discovery_topic, &disc_msg, &disc_token);
     MQTTClient_waitForCompletion(client, disc_token, TIMEOUT);
 
-    // Humidity discovery
-    char humidity_disc_topic[256];
-    snprintf(humidity_disc_topic, sizeof(humidity_disc_topic),
-             "%s/sensor/%s_humidity/config", ha_prefix, clientid);
-    char humidity_disc_payload[1024];
-    snprintf(humidity_disc_payload, sizeof(humidity_disc_payload),
-             "{\"name\":\"%s Humidity\","
+    // Heating resistance (r_h) discovery
+    char rh_disc_topic[256];
+    snprintf(rh_disc_topic, sizeof(rh_disc_topic),
+             "%s/sensor/%s_rh/config", ha_prefix, clientid);
+    char rh_disc_payload[1024];
+    snprintf(rh_disc_payload, sizeof(rh_disc_payload),
+             "{\"name\":\"%s Heating Resistance\","
              "\"state_topic\":\"%s\","
-             "\"value_template\":\"{{ value_json.humidity }}\","
-             "\"unique_id\":\"%s_humidity\","
+             "\"value_template\":\"{{ value_json.r_h }}\","
+             "\"unit_of_measurement\":\"Ω\","
+             "\"unique_id\":\"%s_rh\","
              "%s}",
              ha_device_name, topicname, clientid, device_block);
-    disc_msg.payload = humidity_disc_payload;
-    disc_msg.payloadlen = (int)strlen(humidity_disc_payload);
-    MQTTClient_publishMessage(client, humidity_disc_topic, &disc_msg, &disc_token);
+    disc_msg.payload = rh_disc_payload;
+    disc_msg.payloadlen = (int)strlen(rh_disc_payload);
+    MQTTClient_publishMessage(client, rh_disc_topic, &disc_msg, &disc_token);
     MQTTClient_waitForCompletion(client, disc_token, TIMEOUT);
 
-    // Resistance discovery
-    char resistance_disc_topic[256];
-    snprintf(resistance_disc_topic, sizeof(resistance_disc_topic),
-             "%s/sensor/%s_resistance/config", ha_prefix, clientid);
-    char resistance_disc_payload[1024];
-    snprintf(resistance_disc_payload, sizeof(resistance_disc_payload),
-             "{\"name\":\"%s Resistance\","
+    // Sensor resistance (r_s) discovery
+    char rs_disc_topic[256];
+    snprintf(rs_disc_topic, sizeof(rs_disc_topic),
+             "%s/sensor/%s_rs/config", ha_prefix, clientid);
+    char rs_disc_payload[1024];
+    snprintf(rs_disc_payload, sizeof(rs_disc_payload),
+             "{\"name\":\"%s Sensor Resistance\","
              "\"state_topic\":\"%s\","
-             "\"value_template\":\"{{ value_json.resistance }}\","
+             "\"value_template\":\"{{ value_json.r_s }}\","
              "\"unit_of_measurement\":\"Ω\","
-             "\"unique_id\":\"%s_resistance\","
+             "\"unique_id\":\"%s_rs\","
              "%s}",
              ha_device_name, topicname, clientid, device_block);
-    disc_msg.payload = resistance_disc_payload;
-    disc_msg.payloadlen = (int)strlen(resistance_disc_payload);
-    MQTTClient_publishMessage(client, resistance_disc_topic, &disc_msg, &disc_token);
+    disc_msg.payload = rs_disc_payload;
+    disc_msg.payloadlen = (int)strlen(rs_disc_payload);
+    MQTTClient_publishMessage(client, rs_disc_topic, &disc_msg, &disc_token);
     MQTTClient_waitForCompletion(client, disc_token, TIMEOUT);
 
 	while(rc==MQTTCLIENT_SUCCESS) {
@@ -521,14 +522,16 @@ int main(int argc, char *argv[])
 		memcpy(&pwm_val, fullbuf+6, 2);
 		pwm_val = le16toh(pwm_val);
 
-		humidity_raw = (unsigned char)fullbuf[7];
-		
-		memcpy(&resistance, fullbuf + 8, 4);
-		resistance = le32toh(resistance);
+		memcpy(&rh_raw, fullbuf + 8, 2);
+		rh_raw = le16toh(rh_raw);
+
+		r_s = (unsigned int)fullbuf[12]
+		    | ((unsigned int)fullbuf[13] << 8)
+		    | ((unsigned int)fullbuf[14] << 16);
 
 		if (debug == 1) {
-			printout("DEBUG: Humidity raw: ", humidity_raw);
-			printout("DEBUG: Resistance: ", resistance);
+			printout("DEBUG: r_h raw: ", rh_raw);
+			printout("DEBUG: r_s: ", r_s);
 		}
 
 		sleep(1);
@@ -554,9 +557,9 @@ int main(int argc, char *argv[])
 			}
 
             char json_payload[512];
-            snprintf(json_payload, sizeof(json_payload), 
-                "{\"voc\":%d,\"humidity\":%u,\"resistance\":%u,\"debug\":%u,\"pwm\":%u}",
-                voc, humidity_raw, resistance, debug_val, pwm_val);
+            snprintf(json_payload, sizeof(json_payload),
+                "{\"voc\":%u,\"r_h\":%.2f,\"r_s\":%u,\"debug\":%u,\"pwm\":%u}",
+                voc, rh_raw / 100.0, r_s, debug_val, pwm_val);
             
             pubmsg.payload = json_payload;
             pubmsg.payloadlen = strlen(json_payload);

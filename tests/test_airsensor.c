@@ -42,11 +42,10 @@ static void print_header(const char *suite) {
  * Logic replicated from airsensor.c
  *
  * Each helper mirrors the exact expression used in production code.
- * Line references are to airsensor.c.
  * -------------------------------------------------------------------------- */
 
 /*
- * VOC range check — airsensor.c:290
+ * VOC range check — airsensor.c
  *   if ( voc >= 450 && voc <= 15001)
  *
  * AppliedSensor spec: 450–2000 ppm.  The code accepts up to 15001.
@@ -56,39 +55,47 @@ static int voc_in_range(unsigned short voc) {
 }
 
 /*
- * Little-endian VOC extraction from USB response buffer — airsensor.c:274–275
- *   memcpy(&iresult, buf+2, 2);
- *   voc = __le16_to_cpu(iresult);
+ * USB response buffer layout (16 bytes, per FHEM 38_CO20.pm reference):
  *
- * The USB response is 16 bytes; bytes 2–3 carry the VOC value in
- * little-endian byte order.  We reconstruct it portably here without
- * relying on the kernel-specific __le16_to_cpu macro.
+ *   Byte 0:    '@' marker (0x40)
+ *   Byte 1:    sequence byte
+ *   Bytes 2-3: VOC (LE 16-bit, ppm)
+ *   Bytes 4-5: debug value (LE 16-bit)
+ *   Bytes 6-7: PWM value (LE 16-bit)
+ *   Bytes 8-9: r_h — heating resistance (LE 16-bit, raw; divide by 100 for Ohm)
+ *   Bytes 10-11: unused
+ *   Bytes 12-14: r_s — sensor resistance (LE 24-bit, Ohm)
+ *   Byte 15: unused
  */
+
 static unsigned short parse_voc_from_buf(const unsigned char *buf) {
     return (unsigned short)buf[2] | ((unsigned short)buf[3] << 8);
 }
 
-/*
- * Humidity extraction from USB response buffer — byte 7
- *
- * The USB response is 16 bytes; byte 7 carries the relative humidity
- * as an unsigned 8-bit integer.
- */
-static unsigned char parse_humidity_from_buf(const unsigned char *buf) {
-    return buf[7];
+static unsigned short parse_debug_from_buf(const unsigned char *buf) {
+    return (unsigned short)buf[4] | ((unsigned short)buf[5] << 8);
+}
+
+static unsigned short parse_pwm_from_buf(const unsigned char *buf) {
+    return (unsigned short)buf[6] | ((unsigned short)buf[7] << 8);
 }
 
 /*
- * Sensor resistance (Rs) extraction from USB response buffer — bytes 8-11
- *
- * The USB response is 16 bytes; bytes 8–11 carry the sensor resistance
- * as a little-endian unsigned 32-bit integer.
+ * Heating resistance (r_h) — bytes 8-9, LE 16-bit.
+ * Raw value; divide by 100.0 to get Ohm.
  */
-static unsigned int parse_resistance_from_buf(const unsigned char *buf) {
-    return (unsigned int)buf[8]
-         | ((unsigned int)buf[9]  << 8)
-         | ((unsigned int)buf[10] << 16)
-         | ((unsigned int)buf[11] << 24);
+static unsigned short parse_rh_raw_from_buf(const unsigned char *buf) {
+    return (unsigned short)buf[8] | ((unsigned short)buf[9] << 8);
+}
+
+/*
+ * Sensor resistance (r_s) — bytes 12-14, LE 24-bit (3 bytes).
+ * This is the actual gas sensor resistance in Ohm.
+ */
+static unsigned int parse_rs_from_buf(const unsigned char *buf) {
+    return (unsigned int)buf[12]
+         | ((unsigned int)buf[13] << 8)
+         | ((unsigned int)buf[14] << 16);
 }
 
 /*
@@ -99,7 +106,7 @@ static unsigned int parse_resistance_from_buf(const unsigned char *buf) {
 static int parse_serial_from_idn(const char *response, char *serial, size_t serial_size) {
     const char *pos = strstr(response, "S/N:");
     if (!pos) {
-        // Fallback: copy whole trimmed string as serial if no marker found
+        /* Fallback: copy whole trimmed string as serial if no marker found */
         size_t j = 0;
         size_t dest_idx = 0;
         while (response[j] && dest_idx < serial_size - 1) {
@@ -167,11 +174,7 @@ static int parse_firmware_from_idn(const char *response, char *firmware, size_t 
 }
 
 /*
- * MQTT address assembly — airsensor.c:94–97
- *   char address[80] = "tcp://";
- *   strcat(address, brokername);
- *   strcat(address, ":");
- *   strcat(address, portnumber);
+ * MQTT address assembly
  */
 static void build_mqtt_address(char *address, size_t size,
                                const char *host, const char *port) {
@@ -185,136 +188,163 @@ static void build_mqtt_address(char *address, size_t size,
 /* --- VOC range validation ------------------------------------------------ */
 
 static void suite_voc_range(void) {
-    print_header("VOC range validation (airsensor.c:290)");
+    print_header("VOC range validation");
 
-    /* Boundary: lower */
     TEST("voc=450  is valid (lower boundary)",  voc_in_range(450)  == 1);
     TEST("voc=449  is invalid (below lower)",   voc_in_range(449)  == 0);
-
-    /* Boundary: upper */
     TEST("voc=15001 is valid (upper boundary)", voc_in_range(15001) == 1);
     TEST("voc=15002 is invalid (above upper)",  voc_in_range(15002) == 0);
-
-    /* Typical clean-air value from spec */
     TEST("voc=523  is valid (typical clean air)", voc_in_range(523) == 1);
-
-    /* Spec upper limit */
     TEST("voc=2000 is valid (spec max)",        voc_in_range(2000) == 1);
-
-    /* Edge cases */
     TEST("voc=0    is invalid",                 voc_in_range(0)    == 0);
     TEST("voc=65535 is invalid (uint16 max)",   voc_in_range(65535) == 0);
 }
 
-/* --- Little-endian buffer parsing --------------------------------------- */
+/* --- VOC buffer parsing -------------------------------------------------- */
 
 static void suite_voc_parsing(void) {
-    print_header("VOC buffer parsing — little-endian bytes 2-3 (airsensor.c:274-275)");
-
-    unsigned char buf[16];
-
-    /* 523 decimal = 0x020B → lo=0x0B, hi=0x02 */
-    memset(buf, 0, sizeof(buf));
-    buf[2] = 0x0B;
-    buf[3] = 0x02;
-    TEST("parse 523  (0x020B): lo=0x0B hi=0x02", parse_voc_from_buf(buf) == 523);
-
-    /* 450 decimal = 0x01C2 → lo=0xC2, hi=0x01 */
-    memset(buf, 0, sizeof(buf));
-    buf[2] = 0xC2;
-    buf[3] = 0x01;
-    TEST("parse 450  (0x01C2): lo=0xC2 hi=0x01", parse_voc_from_buf(buf) == 450);
-
-    /* 1000 decimal = 0x03E8 → lo=0xE8, hi=0x03 */
-    memset(buf, 0, sizeof(buf));
-    buf[2] = 0xE8;
-    buf[3] = 0x03;
-    TEST("parse 1000 (0x03E8): lo=0xE8 hi=0x03", parse_voc_from_buf(buf) == 1000);
-
-    /* 15001 decimal = 0x3A99 → lo=0x99, hi=0x3A */
-    memset(buf, 0, sizeof(buf));
-    buf[2] = 0x99;
-    buf[3] = 0x3A;
-    TEST("parse 15001 (0x3A99): lo=0x99 hi=0x3A", parse_voc_from_buf(buf) == 15001);
-
-    /* Zero value */
-    memset(buf, 0, sizeof(buf));
-    TEST("parse 0: all-zero buffer yields 0", parse_voc_from_buf(buf) == 0);
-
-    /* Bytes 0, 1, 4+ must be ignored — only bytes 2-3 carry the value */
-    memset(buf, 0xFF, sizeof(buf));  /* poison all bytes */
-    buf[2] = 0x0B;
-    buf[3] = 0x02;
-    TEST("parse 523 even when surrounding bytes are 0xFF",
-         parse_voc_from_buf(buf) == 523);
-}
-
-/* --- Humidity buffer parsing --------------------------------------------- */
-
-static void suite_humidity_parsing(void) {
-    print_header("Humidity buffer parsing — byte 7");
+    print_header("VOC buffer parsing — LE bytes 2-3");
 
     unsigned char buf[16];
 
     memset(buf, 0, sizeof(buf));
-    buf[7] = 0;
-    TEST("humidity=0 from zero buffer", parse_humidity_from_buf(buf) == 0);
+    buf[2] = 0x0B; buf[3] = 0x02;
+    TEST("parse 523  (0x020B)", parse_voc_from_buf(buf) == 523);
 
     memset(buf, 0, sizeof(buf));
-    buf[7] = 128;
-    TEST("humidity=128 from buf[7]=0x80", parse_humidity_from_buf(buf) == 128);
+    buf[2] = 0xC2; buf[3] = 0x01;
+    TEST("parse 450  (0x01C2)", parse_voc_from_buf(buf) == 450);
 
     memset(buf, 0, sizeof(buf));
-    buf[7] = 255;
-    TEST("humidity=255 from buf[7]=0xFF", parse_humidity_from_buf(buf) == 255);
+    buf[2] = 0xE8; buf[3] = 0x03;
+    TEST("parse 1000 (0x03E8)", parse_voc_from_buf(buf) == 1000);
+
+    memset(buf, 0, sizeof(buf));
+    buf[2] = 0x99; buf[3] = 0x3A;
+    TEST("parse 15001 (0x3A99)", parse_voc_from_buf(buf) == 15001);
+
+    memset(buf, 0, sizeof(buf));
+    TEST("parse 0: all-zero buffer", parse_voc_from_buf(buf) == 0);
 
     memset(buf, 0xFF, sizeof(buf));
-    buf[7] = 42;
-    TEST("humidity=42 even when surrounding bytes are 0xFF",
-         parse_humidity_from_buf(buf) == 42);
+    buf[2] = 0x0B; buf[3] = 0x02;
+    TEST("parse 523 with surrounding 0xFF", parse_voc_from_buf(buf) == 523);
 }
 
-/* --- Sensor resistance buffer parsing ------------------------------------ */
+/* --- Debug value buffer parsing ------------------------------------------ */
 
-static void suite_resistance_parsing(void) {
-    print_header("Sensor resistance (Rs) buffer parsing — bytes 8-11 (little-endian uint32)");
+static void suite_debug_parsing(void) {
+    print_header("Debug value parsing — LE bytes 4-5");
 
     unsigned char buf[16];
 
     memset(buf, 0, sizeof(buf));
-    TEST("resistance=0 from zero buffer", parse_resistance_from_buf(buf) == 0);
+    buf[4] = 0xE2; buf[5] = 0x02;
+    TEST("parse debug=738 (0x02E2)", parse_debug_from_buf(buf) == 738);
 
     memset(buf, 0, sizeof(buf));
-    buf[8]  = 0xE8;
-    buf[9]  = 0x03;
-    TEST("resistance=1000 (0x000003E8)", parse_resistance_from_buf(buf) == 1000);
+    TEST("parse debug=0 from zero buffer", parse_debug_from_buf(buf) == 0);
 
     memset(buf, 0, sizeof(buf));
-    buf[8]  = 0xA0;
-    buf[9]  = 0x86;
-    buf[10] = 0x01;
-    TEST("resistance=100000 (0x000186A0)", parse_resistance_from_buf(buf) == 100000);
+    buf[4] = 0xFF; buf[5] = 0xFF;
+    TEST("parse debug=65535 (0xFFFF)", parse_debug_from_buf(buf) == 65535);
+}
+
+/* --- PWM value buffer parsing -------------------------------------------- */
+
+static void suite_pwm_parsing(void) {
+    print_header("PWM value parsing — LE bytes 6-7");
+
+    unsigned char buf[16];
 
     memset(buf, 0, sizeof(buf));
-    buf[8]  = 0xFF;
-    buf[9]  = 0xFF;
-    buf[10] = 0xFF;
-    buf[11] = 0xFF;
-    TEST("resistance=4294967295 (0xFFFFFFFF)", parse_resistance_from_buf(buf) == 4294967295U);
+    buf[6] = 0x0A; buf[7] = 0x00;
+    TEST("parse pwm=10 (0x000A)", parse_pwm_from_buf(buf) == 10);
 
+    memset(buf, 0, sizeof(buf));
+    TEST("parse pwm=0 from zero buffer", parse_pwm_from_buf(buf) == 0);
+
+    memset(buf, 0, sizeof(buf));
+    buf[6] = 0xFF; buf[7] = 0xFF;
+    TEST("parse pwm=65535 (0xFFFF)", parse_pwm_from_buf(buf) == 65535);
+
+    /* Verify byte 7 is NOT humidity but high byte of PWM */
+    memset(buf, 0, sizeof(buf));
+    buf[6] = 0x00; buf[7] = 0x01;
+    TEST("byte 7 is PWM high byte: pwm=256", parse_pwm_from_buf(buf) == 256);
+}
+
+/* --- Heating resistance (r_h) buffer parsing ----------------------------- */
+
+static void suite_rh_parsing(void) {
+    print_header("Heating resistance (r_h) parsing — LE bytes 8-9");
+
+    unsigned char buf[16];
+
+    memset(buf, 0, sizeof(buf));
+    TEST("r_h_raw=0 from zero buffer", parse_rh_raw_from_buf(buf) == 0);
+
+    /* 738 raw → 7.38 Ohm */
+    memset(buf, 0, sizeof(buf));
+    buf[8] = 0xE2; buf[9] = 0x02;
+    TEST("r_h_raw=738 (0x02E2)", parse_rh_raw_from_buf(buf) == 738);
+
+    memset(buf, 0, sizeof(buf));
+    buf[8] = 0xFF; buf[9] = 0xFF;
+    TEST("r_h_raw=65535 (0xFFFF)", parse_rh_raw_from_buf(buf) == 65535);
+
+    /* r_h division: 738 / 100 = 7.38 */
+    memset(buf, 0, sizeof(buf));
+    buf[8] = 0xE2; buf[9] = 0x02;
+    double rh_ohm = parse_rh_raw_from_buf(buf) / 100.0;
+    TEST("r_h 738/100 = 7.38 Ohm", rh_ohm > 7.37 && rh_ohm < 7.39);
+
+    /* Verify bytes 8-9 are independent from surrounding bytes */
     memset(buf, 0xFF, sizeof(buf));
-    buf[8]  = 0xE8;
-    buf[9]  = 0x03;
-    buf[10] = 0x00;
-    buf[11] = 0x00;
-    TEST("resistance=1000 even when surrounding bytes are 0xFF",
-         parse_resistance_from_buf(buf) == 1000);
+    buf[8] = 0xE2; buf[9] = 0x02;
+    TEST("r_h=738 with surrounding 0xFF", parse_rh_raw_from_buf(buf) == 738);
+}
+
+/* --- Sensor resistance (r_s) buffer parsing ------------------------------ */
+
+static void suite_rs_parsing(void) {
+    print_header("Sensor resistance (r_s) parsing — LE bytes 12-14 (24-bit)");
+
+    unsigned char buf[16];
+
+    memset(buf, 0, sizeof(buf));
+    TEST("r_s=0 from zero buffer", parse_rs_from_buf(buf) == 0);
+
+    /* 38221 = 0x00954D → buf[12]=0x4D, buf[13]=0x95, buf[14]=0x00 */
+    memset(buf, 0, sizeof(buf));
+    buf[12] = 0x4D; buf[13] = 0x95; buf[14] = 0x00;
+    TEST("r_s=38221 (0x00954D)", parse_rs_from_buf(buf) == 38221);
+
+    /* 100000 = 0x0186A0 → buf[12]=0xA0, buf[13]=0x86, buf[14]=0x01 */
+    memset(buf, 0, sizeof(buf));
+    buf[12] = 0xA0; buf[13] = 0x86; buf[14] = 0x01;
+    TEST("r_s=100000 (0x0186A0)", parse_rs_from_buf(buf) == 100000);
+
+    /* Max 24-bit: 16777215 = 0xFFFFFF */
+    memset(buf, 0, sizeof(buf));
+    buf[12] = 0xFF; buf[13] = 0xFF; buf[14] = 0xFF;
+    TEST("r_s=16777215 (0xFFFFFF, 24-bit max)", parse_rs_from_buf(buf) == 16777215);
+
+    /* Byte 15 must NOT affect r_s (only 3 bytes, not 4) */
+    memset(buf, 0, sizeof(buf));
+    buf[12] = 0x4D; buf[13] = 0x95; buf[14] = 0x00; buf[15] = 0xFF;
+    TEST("r_s=38221 ignores byte 15", parse_rs_from_buf(buf) == 38221);
+
+    /* Verify independence from surrounding bytes */
+    memset(buf, 0xFF, sizeof(buf));
+    buf[12] = 0xA0; buf[13] = 0x86; buf[14] = 0x01;
+    TEST("r_s=100000 with surrounding 0xFF", parse_rs_from_buf(buf) == 100000);
 }
 
 /* --- MQTT address assembly ----------------------------------------------- */
 
 static void suite_mqtt_address(void) {
-    print_header("MQTT broker address assembly (airsensor.c:94-97)");
+    print_header("MQTT broker address assembly");
 
     char addr[80];
 
@@ -333,19 +363,11 @@ static void suite_mqtt_address(void) {
 
 /* --- Home Assistant MQTT discovery -------------------------------------- */
 
-/*
- * Discovery topic assembly — airsensor.c
- *   snprintf(discovery_topic, ..., "%s/sensor/%s/config", ha_prefix, clientid)
- */
 static void build_discovery_topic(char *topic, size_t size,
                                   const char *prefix, const char *clientid) {
     snprintf(topic, size, "%s/sensor/%s/config", prefix, clientid);
 }
 
-/*
- * Discovery payload assembly — airsensor.c
- * Builds a minimal JSON payload similar to what airsensor.c produces.
- */
 static void build_discovery_payload(char *payload, size_t size,
                                     const char *device_name,
                                     const char *state_topic,
@@ -364,71 +386,38 @@ static void build_discovery_payload(char *payload, size_t size,
              device_name, state_topic, clientid, clientid, device_name);
 }
 
-static void build_humidity_discovery_payload(char *payload, size_t size,
-                                              const char *device_name,
-                                              const char *state_topic,
-                                              const char *clientid,
-                                              const char *serial,
-                                              const char *firmware) {
-    char device_block[512];
-    if (serial && serial[0] && firmware && firmware[0]) {
-        snprintf(device_block, sizeof(device_block),
-                 "\"device\":{\"identifiers\":[\"%s\"],"
-                 "\"name\":\"%s\","
-                 "\"model\":\"USB VOC Sensor\","
-                 "\"manufacturer\":\"Atmel\","
-                 "\"serial_number\":\"%s\","
-                 "\"sw_version\":\"%s\"}",
-                 clientid, device_name, serial, firmware);
-    } else {
-        snprintf(device_block, sizeof(device_block),
-                 "\"device\":{\"identifiers\":[\"%s\"],"
-                 "\"name\":\"%s\","
-                 "\"model\":\"USB VOC Sensor\","
-                 "\"manufacturer\":\"Atmel\"}",
-                 clientid, device_name);
-    }
+static void build_rh_discovery_payload(char *payload, size_t size,
+                                       const char *device_name,
+                                       const char *state_topic,
+                                       const char *clientid) {
     snprintf(payload, size,
-             "{\"name\":\"%s Humidity\","
+             "{\"name\":\"%s Heating Resistance\","
              "\"state_topic\":\"%s\","
-             "\"value_template\":\"{{ value_json.humidity }}\","
-             "\"unique_id\":\"%s_humidity\","
-             "%s}",
-             device_name, state_topic, clientid, device_block);
+             "\"value_template\":\"{{ value_json.r_h }}\","
+             "\"unit_of_measurement\":\"Ω\","
+             "\"unique_id\":\"%s_rh\","
+             "\"device\":{\"identifiers\":[\"%s\"],"
+             "\"name\":\"%s\","
+             "\"model\":\"USB VOC Sensor\","
+             "\"manufacturer\":\"Atmel\"}}",
+             device_name, state_topic, clientid, clientid, device_name);
 }
 
-static void build_resistance_discovery_payload(char *payload, size_t size,
-                                                const char *device_name,
-                                                const char *state_topic,
-                                                const char *clientid,
-                                                const char *serial,
-                                                const char *firmware) {
-    char device_block[512];
-    if (serial && serial[0] && firmware && firmware[0]) {
-        snprintf(device_block, sizeof(device_block),
-                 "\"device\":{\"identifiers\":[\"%s\"],"
-                 "\"name\":\"%s\","
-                 "\"model\":\"USB VOC Sensor\","
-                 "\"manufacturer\":\"Atmel\","
-                 "\"serial_number\":\"%s\","
-                 "\"sw_version\":\"%s\"}",
-                 clientid, device_name, serial, firmware);
-    } else {
-        snprintf(device_block, sizeof(device_block),
-                 "\"device\":{\"identifiers\":[\"%s\"],"
-                 "\"name\":\"%s\","
-                 "\"model\":\"USB VOC Sensor\","
-                 "\"manufacturer\":\"Atmel\"}",
-                 clientid, device_name);
-    }
+static void build_rs_discovery_payload(char *payload, size_t size,
+                                       const char *device_name,
+                                       const char *state_topic,
+                                       const char *clientid) {
     snprintf(payload, size,
-             "{\"name\":\"%s Resistance\","
+             "{\"name\":\"%s Sensor Resistance\","
              "\"state_topic\":\"%s\","
-             "\"value_template\":\"{{ value_json.resistance }}\","
+             "\"value_template\":\"{{ value_json.r_s }}\","
              "\"unit_of_measurement\":\"Ω\","
-             "\"unique_id\":\"%s_resistance\","
-             "%s}",
-             device_name, state_topic, clientid, device_block);
+             "\"unique_id\":\"%s_rs\","
+             "\"device\":{\"identifiers\":[\"%s\"],"
+             "\"name\":\"%s\","
+             "\"model\":\"USB VOC Sensor\","
+             "\"manufacturer\":\"Atmel\"}}",
+             device_name, state_topic, clientid, clientid, device_name);
 }
 
 static void suite_ha_discovery(void) {
@@ -436,83 +425,57 @@ static void suite_ha_discovery(void) {
 
     char topic[256];
 
-    /* Default prefix */
     build_discovery_topic(topic, sizeof(topic), "homeassistant", "airsensor");
     TEST("default topic: homeassistant/sensor/airsensor/config",
          strcmp(topic, "homeassistant/sensor/airsensor/config") == 0);
 
-    /* Custom prefix */
     build_discovery_topic(topic, sizeof(topic), "myhome", "airsensor");
     TEST("custom prefix: myhome/sensor/airsensor/config",
          strcmp(topic, "myhome/sensor/airsensor/config") == 0);
 
-    /* Custom clientid */
     build_discovery_topic(topic, sizeof(topic), "homeassistant", "wohnzimmer");
     TEST("custom clientid: homeassistant/sensor/wohnzimmer/config",
          strcmp(topic, "homeassistant/sensor/wohnzimmer/config") == 0);
 
     char payload[1024];
 
-    /* Payload contains required HA fields */
+    /* VOC discovery payload */
     build_discovery_payload(payload, sizeof(payload),
-                            "Air Sensor", "home/CO2/voc", "airsensor");
-
-    TEST("payload contains state_topic",
-         strstr(payload, "\"state_topic\":\"home/CO2/voc\"") != NULL);
-    TEST("payload contains value_template for voc",
+                            "Air Sensor", "home/CO2/state", "airsensor");
+    TEST("VOC payload contains state_topic",
+         strstr(payload, "\"state_topic\":\"home/CO2/state\"") != NULL);
+    TEST("VOC payload contains value_template for voc",
          strstr(payload, "\"value_template\":\"{{ value_json.voc }}\"") != NULL);
-    TEST("payload contains unit ppm",
+    TEST("VOC payload contains unit ppm",
          strstr(payload, "\"unit_of_measurement\":\"ppm\"") != NULL);
-    TEST("payload contains device_class",
+    TEST("VOC payload contains device_class",
          strstr(payload, "\"device_class\":\"volatile_organic_compounds_parts\"") != NULL);
-    TEST("payload contains unique_id",
+    TEST("VOC payload contains unique_id",
          strstr(payload, "\"unique_id\":\"airsensor_voc\"") != NULL);
-    TEST("payload contains device name",
-         strstr(payload, "\"name\":\"Air Sensor\"") != NULL);
-    TEST("payload contains manufacturer",
-         strstr(payload, "\"manufacturer\":\"Atmel\"") != NULL);
-}
 
-/* --- Extended HA discovery — humidity, resistance, device info ----------- */
-
-static void suite_extended_ha_discovery(void) {
-    print_header("Extended HA discovery — humidity, resistance, device info");
-
-    char payload[1024];
-
-    /* Humidity discovery without device info */
-    build_humidity_discovery_payload(payload, sizeof(payload),
-                                     "Air Sensor", "home/CO2/voc",
-                                     "airsensor", "", "");
-    TEST("humidity payload contains name",
-         strstr(payload, "\"name\":\"Air Sensor Humidity\"") != NULL);
-    TEST("humidity payload contains unique_id",
-         strstr(payload, "\"unique_id\":\"airsensor_humidity\"") != NULL);
-    TEST("humidity payload contains state_topic (main topic)",
-         strstr(payload, "\"state_topic\":\"home/CO2/voc\"") != NULL);
-    TEST("humidity payload contains value_template",
-         strstr(payload, "\"value_template\":\"{{ value_json.humidity }}\"") != NULL);
-
-    /* Resistance discovery with device info */
-    build_resistance_discovery_payload(payload, sizeof(payload),
-                                       "Air Sensor", "home/CO2/voc",
-                                       "airsensor", "ABC123", "1.12p5");
-    TEST("resistance payload contains name",
-         strstr(payload, "\"name\":\"Air Sensor Resistance\"") != NULL);
-    TEST("resistance payload contains unit Ω",
+    /* r_h (heating resistance) discovery payload */
+    build_rh_discovery_payload(payload, sizeof(payload),
+                               "Air Sensor", "home/CO2/state", "airsensor");
+    TEST("r_h payload contains name 'Heating Resistance'",
+         strstr(payload, "\"name\":\"Air Sensor Heating Resistance\"") != NULL);
+    TEST("r_h payload contains value_template for r_h",
+         strstr(payload, "\"value_template\":\"{{ value_json.r_h }}\"") != NULL);
+    TEST("r_h payload contains unit Ω",
          strstr(payload, "\"unit_of_measurement\":\"Ω\"") != NULL);
-    TEST("resistance payload contains value_template",
-         strstr(payload, "\"value_template\":\"{{ value_json.resistance }}\"") != NULL);
-    TEST("resistance payload contains serial_number",
-         strstr(payload, "\"serial_number\":\"ABC123\"") != NULL);
-    TEST("resistance payload contains sw_version",
-         strstr(payload, "\"sw_version\":\"1.12p5\"") != NULL);
+    TEST("r_h payload contains unique_id airsensor_rh",
+         strstr(payload, "\"unique_id\":\"airsensor_rh\"") != NULL);
 
-    /* VOC discovery still works (existing function, no serial/firmware) */
-    build_discovery_payload(payload, sizeof(payload),
-                            "Air Sensor", "home/CO2/voc", "airsensor");
-    TEST("VOC payload still works without serial/firmware",
-         strstr(payload, "\"unique_id\":\"airsensor_voc\"") != NULL);
+    /* r_s (sensor resistance) discovery payload */
+    build_rs_discovery_payload(payload, sizeof(payload),
+                               "Air Sensor", "home/CO2/state", "airsensor");
+    TEST("r_s payload contains name 'Sensor Resistance'",
+         strstr(payload, "\"name\":\"Air Sensor Sensor Resistance\"") != NULL);
+    TEST("r_s payload contains value_template for r_s",
+         strstr(payload, "\"value_template\":\"{{ value_json.r_s }}\"") != NULL);
+    TEST("r_s payload contains unit Ω",
+         strstr(payload, "\"unit_of_measurement\":\"Ω\"") != NULL);
+    TEST("r_s payload contains unique_id airsensor_rs",
+         strstr(payload, "\"unique_id\":\"airsensor_rs\"") != NULL);
 }
 
 /* --- *IDN? response parsing ---------------------------------------------- */
@@ -553,43 +516,52 @@ static void suite_idn_parsing(void) {
     TEST("serial terminated by newline", ret == 0);
     TEST("serial value: ABC123", strcmp(serial, "ABC123") == 0);
 
-    /* Delimiter: semicolon */
     ret = parse_serial_from_idn("S/N:ABC123;FW:1.2", serial, sizeof(serial));
     TEST("serial terminated by semicolon", ret == 0);
     TEST("serial value: ABC123", strcmp(serial, "ABC123") == 0);
 
-    /* Firmware: semicolon delimiter */
     ret = parse_firmware_from_idn("FW:1.12p5;MCU:ATmega", firmware, sizeof(firmware));
     TEST("firmware terminated by semicolon", ret == 0);
     TEST("firmware value: 1.12p5", strcmp(firmware, "1.12p5") == 0);
 
-    /* Firmware: @ padding delimiter */
     ret = parse_firmware_from_idn("FW:1.12p5@@@@", firmware, sizeof(firmware));
     TEST("firmware terminated by @ padding", ret == 0);
     TEST("firmware value with @ terminator", strcmp(firmware, "1.12p5") == 0);
 
-    /* Firmware: fallback pattern (FHEM-style, no FW: marker) */
     ret = parse_firmware_from_idn("...;1.12p5$;;MCU...", firmware, sizeof(firmware));
     TEST("firmware fallback marker parsed", ret == 0);
     TEST("firmware fallback value: 1.12p5", strcmp(firmware, "1.12p5") == 0);
 }
 
-/* --- Known bug: svoc[5] buffer too small --------------------------------- */
-/*
- * airsensor.c:298  char svoc[5];
- * airsensor.c:300  sprintf(svoc, "%d", voc);
- *
- * A value of 15001 has 5 digits and requires 6 bytes (including '\0').
- * The buffer svoc[5] is one byte too small for any 5-digit value, which
- * causes undefined behaviour (buffer overflow) via sprintf().
- *
- * These tests document the requirement, not the current (broken) behaviour.
- * They will pass once the buffer is correctly sized to at least 6 bytes.
- */
-static void suite_svoc_buffer(void) {
-    print_header("svoc buffer size — known bug (airsensor.c:298)");
+/* --- JSON payload format ------------------------------------------------- */
 
-    /* Calculate how many bytes sprintf needs for each value */
+static void suite_json_payload(void) {
+    print_header("JSON state payload format");
+
+    char json[512];
+    unsigned short voc = 523;
+    unsigned short debug_val = 738;
+    unsigned short pwm_val = 10;
+    unsigned short rh_raw = 738;
+    unsigned int rs = 38221;
+
+    snprintf(json, sizeof(json),
+             "{\"voc\":%u,\"r_h\":%.2f,\"r_s\":%u,\"debug\":%u,\"pwm\":%u}",
+             voc, rh_raw / 100.0, rs, debug_val, pwm_val);
+
+    TEST("json contains voc",   strstr(json, "\"voc\":523") != NULL);
+    TEST("json contains r_h",   strstr(json, "\"r_h\":7.38") != NULL);
+    TEST("json contains r_s",   strstr(json, "\"r_s\":38221") != NULL);
+    TEST("json contains debug", strstr(json, "\"debug\":738") != NULL);
+    TEST("json contains pwm",   strstr(json, "\"pwm\":10") != NULL);
+    TEST("json does NOT contain humidity", strstr(json, "humidity") == NULL);
+}
+
+/* --- svoc buffer size ---------------------------------------------------- */
+
+static void suite_svoc_buffer(void) {
+    print_header("svoc buffer size");
+
     char tmp[32];
 
     int len_523   = snprintf(tmp, sizeof(tmp), "%d", 523);
@@ -598,16 +570,11 @@ static void suite_svoc_buffer(void) {
     int len_10000 = snprintf(tmp, sizeof(tmp), "%d", 10000);
     int len_15001 = snprintf(tmp, sizeof(tmp), "%d", 15001);
 
-    /* Values with ≤4 digits fit in svoc[5] (4 chars + '\0') */
     TEST("523   requires 3 bytes, fits in svoc[5]",  len_523   + 1 <= 5);
     TEST("2000  requires 4 bytes, fits in svoc[5]",  len_2000  + 1 <= 5);
     TEST("9999  requires 4 bytes, fits in svoc[5]",  len_9999  + 1 <= 5);
-
-    /* 5-digit values overflow svoc[5] — these tests document the bug */
     TEST("10000 requires 6 bytes, overflows svoc[5]", len_10000 + 1 > 5);
     TEST("15001 requires 6 bytes, overflows svoc[5]", len_15001 + 1 > 5);
-
-    /* The minimum safe buffer size for any value up to 15001 is 6 bytes */
     TEST("safe buffer for max_valid(15001) must be >= 6 bytes",
          len_15001 + 1 >= 6);
 }
@@ -622,12 +589,14 @@ int main(void) {
 
     suite_voc_range();
     suite_voc_parsing();
-    suite_humidity_parsing();
-    suite_resistance_parsing();
+    suite_debug_parsing();
+    suite_pwm_parsing();
+    suite_rh_parsing();
+    suite_rs_parsing();
     suite_mqtt_address();
     suite_ha_discovery();
-    suite_extended_ha_discovery();
     suite_idn_parsing();
+    suite_json_payload();
     suite_svoc_buffer();
 
     printf("\n====================\n");
