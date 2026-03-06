@@ -668,6 +668,237 @@ static void suite_retry_logic(void) {
     TEST("fail=20, max=20 → reconnect", should_reconnect(20, 20) == 1);
 }
 
+/* --- Data command building (FLAGGET?, KNOBPRE?) -------------------------- */
+
+/*
+ * Build a data query command with 4-hex-digit sequence number.
+ * Format: "@" + seq4(4 hex chars) + reqstr + "\n" + "@" padding → 16 bytes
+ */
+static void build_data_command(unsigned short seq4, const char *reqstr, char *cmd) {
+    char tmp[32];
+    snprintf(tmp, sizeof(tmp), "@%04X%s\n@@@@@@@@@@@@@@@@", seq4, reqstr);
+    memcpy(cmd, tmp, 16);
+}
+
+static void suite_data_command(void) {
+    print_header("Data command building (FLAGGET?, KNOBPRE?)");
+
+    char cmd[16];
+
+    build_data_command(0x0001, "*IDN?", cmd);
+    TEST("IDN cmd starts with @", cmd[0] == '@');
+    TEST("IDN cmd seq '0001'", cmd[1]=='0' && cmd[2]=='0' && cmd[3]=='0' && cmd[4]=='1');
+    TEST("IDN cmd contains '*IDN?'", memcmp(cmd+5, "*IDN?", 5) == 0);
+    TEST("IDN cmd byte 10 is newline", cmd[10] == '\n');
+
+    build_data_command(0x0002, "FLAGGET?", cmd);
+    TEST("FLAG cmd seq '0002'", cmd[1]=='0' && cmd[2]=='0' && cmd[3]=='0' && cmd[4]=='2');
+    TEST("FLAG cmd contains 'FLAGGET?'", memcmp(cmd+5, "FLAGGET?", 8) == 0);
+    TEST("FLAG cmd byte 13 is newline", cmd[13] == '\n');
+
+    build_data_command(0x0003, "KNOBPRE?", cmd);
+    TEST("KNOB cmd contains 'KNOBPRE?'", memcmp(cmd+5, "KNOBPRE?", 8) == 0);
+
+    /* Sequence wrapping */
+    build_data_command(0xFFFF, "*IDN?", cmd);
+    TEST("seq FFFF", cmd[1]=='F' && cmd[2]=='F' && cmd[3]=='F' && cmd[4]=='F');
+}
+
+/* --- FLAGGET? response parsing ------------------------------------------- */
+
+typedef struct {
+    unsigned short warmup;
+    unsigned short burn_in;
+    unsigned short reset_baseline;
+    unsigned short calibrate_heater;
+    unsigned short logging;
+} device_flags_t;
+
+/*
+ * Parse FLAGGET? response.
+ * Finds ';' delimiter, then reads 5 LE16 values at offsets +2, +6, +10, +14, +18.
+ * Returns 0 on success, -1 if delimiter not found or data too short.
+ */
+static int parse_flags_response(const unsigned char *data, size_t len, device_flags_t *flags) {
+    const unsigned char *semi = memchr(data, ';', len);
+    if (!semi) return -1;
+    size_t offset = (size_t)(semi - data);
+    if (offset + 20 > len) return -1;
+    flags->warmup           = semi[2]  | ((unsigned short)semi[3]  << 8);
+    flags->burn_in          = semi[6]  | ((unsigned short)semi[7]  << 8);
+    flags->reset_baseline   = semi[10] | ((unsigned short)semi[11] << 8);
+    flags->calibrate_heater = semi[14] | ((unsigned short)semi[15] << 8);
+    flags->logging          = semi[18] | ((unsigned short)semi[19] << 8);
+    return 0;
+}
+
+static void suite_flagget_parsing(void) {
+    print_header("FLAGGET? response parsing");
+
+    device_flags_t flags;
+    int ret;
+
+    /* Synthetic response: ';' at offset 5, then 5 LE16 values */
+    unsigned char data[48];
+    memset(data, 0, sizeof(data));
+    data[5] = ';';
+    /* warmup = 30 (0x001E) at offset 5+2=7 */
+    data[7] = 0x1E; data[8] = 0x00;
+    /* burn_in = 1440 (0x05A0) at offset 5+6=11 */
+    data[11] = 0xA0; data[12] = 0x05;
+    /* reset_baseline = 0 at offset 5+10=15 */
+    data[15] = 0x00; data[16] = 0x00;
+    /* calibrate_heater = 1 at offset 5+14=19 */
+    data[19] = 0x01; data[20] = 0x00;
+    /* logging = 100 (0x0064) at offset 5+18=23 */
+    data[23] = 0x64; data[24] = 0x00;
+
+    ret = parse_flags_response(data, sizeof(data), &flags);
+    TEST("parse flags: success", ret == 0);
+    TEST("warmup = 30 minutes", flags.warmup == 30);
+    TEST("burn_in = 1440 minutes", flags.burn_in == 1440);
+    TEST("reset_baseline = 0", flags.reset_baseline == 0);
+    TEST("calibrate_heater = 1", flags.calibrate_heater == 1);
+    TEST("logging = 100", flags.logging == 100);
+
+    /* All zeros after delimiter */
+    memset(data, 0, sizeof(data));
+    data[0] = ';';
+    ret = parse_flags_response(data, sizeof(data), &flags);
+    TEST("all zeros: success", ret == 0);
+    TEST("all zeros: warmup = 0", flags.warmup == 0);
+    TEST("all zeros: burn_in = 0", flags.burn_in == 0);
+
+    /* No delimiter → failure */
+    memset(data, 'A', sizeof(data));
+    ret = parse_flags_response(data, sizeof(data), &flags);
+    TEST("no delimiter: returns -1", ret == -1);
+
+    /* Delimiter too close to end → failure */
+    memset(data, 0, sizeof(data));
+    data[45] = ';';
+    ret = parse_flags_response(data, sizeof(data), &flags);
+    TEST("delimiter near end: returns -1", ret == -1);
+}
+
+/* --- KNOBPRE? response parsing ------------------------------------------- */
+
+typedef struct {
+    unsigned short warn1;
+    unsigned short warn2;
+} device_knobs_t;
+
+/*
+ * Parse KNOBPRE? response for warn thresholds.
+ * Searches for "warn1" and "warn2" markers and reads LE16 at marker+22.
+ * Returns 0 on success (at least warn1 found), -1 if no markers found.
+ */
+static int parse_knobs_response(const unsigned char *data, size_t len, device_knobs_t *knobs) {
+    knobs->warn1 = 0;
+    knobs->warn2 = 0;
+    int found = 0;
+
+    for (size_t i = 0; i + 24 <= len; i++) {
+        if (memcmp(data + i, "warn1", 5) == 0 && i + 24 <= len) {
+            knobs->warn1 = data[i+22] | ((unsigned short)data[i+23] << 8);
+            found = 1;
+        }
+        if (memcmp(data + i, "warn2", 5) == 0 && i + 24 <= len) {
+            knobs->warn2 = data[i+22] | ((unsigned short)data[i+23] << 8);
+            found = 1;
+        }
+    }
+    return found ? 0 : -1;
+}
+
+static void suite_knobpre_parsing(void) {
+    print_header("KNOBPRE? response parsing (warn thresholds)");
+
+    device_knobs_t knobs;
+    int ret;
+
+    /* Build synthetic response with "warn1" at offset 10, "warn2" at offset 50 */
+    unsigned char data[256];
+    memset(data, 0, sizeof(data));
+    memcpy(data + 10, "warn1", 5);
+    /* warn1 value = 1000 (0x03E8) at offset 10+22=32 */
+    data[32] = 0xE8; data[33] = 0x03;
+    memcpy(data + 50, "warn2", 5);
+    /* warn2 value = 1500 (0x05DC) at offset 50+22=72 */
+    data[72] = 0xDC; data[73] = 0x05;
+
+    ret = parse_knobs_response(data, sizeof(data), &knobs);
+    TEST("parse knobs: success", ret == 0);
+    TEST("warn1 = 1000 ppm", knobs.warn1 == 1000);
+    TEST("warn2 = 1500 ppm", knobs.warn2 == 1500);
+
+    /* Only warn1 present */
+    memset(data, 0, sizeof(data));
+    memcpy(data + 10, "warn1", 5);
+    data[32] = 0xC2; data[33] = 0x01;
+    ret = parse_knobs_response(data, sizeof(data), &knobs);
+    TEST("only warn1: success", ret == 0);
+    TEST("only warn1 = 450 ppm", knobs.warn1 == 450);
+    TEST("only warn1: warn2 = 0", knobs.warn2 == 0);
+
+    /* No markers → failure */
+    memset(data, 'X', sizeof(data));
+    ret = parse_knobs_response(data, sizeof(data), &knobs);
+    TEST("no markers: returns -1", ret == -1);
+
+    /* Empty data */
+    ret = parse_knobs_response(data, 0, &knobs);
+    TEST("empty data: returns -1", ret == -1);
+}
+
+/* --- Diagnostic HA discovery --------------------------------------------- */
+
+static void suite_diagnostic_discovery(void) {
+    print_header("Diagnostic HA discovery (warmup, warn thresholds)");
+
+    char payload[1024];
+
+    /* Warmup diagnostic sensor */
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"%s Warmup\","
+             "\"state_topic\":\"%s\","
+             "\"value_template\":\"{{ value_json.warmup }}\","
+             "\"unit_of_measurement\":\"min\","
+             "\"entity_category\":\"diagnostic\","
+             "\"unique_id\":\"%s_warmup\","
+             "\"device\":{\"identifiers\":[\"%s\"]}}",
+             "Air Sensor", "home/CO2/state", "airsensor", "airsensor");
+
+    TEST("warmup payload contains name",
+         strstr(payload, "\"name\":\"Air Sensor Warmup\"") != NULL);
+    TEST("warmup payload contains value_template",
+         strstr(payload, "\"value_template\":\"{{ value_json.warmup }}\"") != NULL);
+    TEST("warmup payload contains unit min",
+         strstr(payload, "\"unit_of_measurement\":\"min\"") != NULL);
+    TEST("warmup payload contains entity_category diagnostic",
+         strstr(payload, "\"entity_category\":\"diagnostic\"") != NULL);
+    TEST("warmup payload contains unique_id",
+         strstr(payload, "\"unique_id\":\"airsensor_warmup\"") != NULL);
+
+    /* Warn1 threshold diagnostic sensor */
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"%s Warn Threshold 1\","
+             "\"state_topic\":\"%s\","
+             "\"value_template\":\"{{ value_json.warn1 }}\","
+             "\"unit_of_measurement\":\"ppm\","
+             "\"entity_category\":\"diagnostic\","
+             "\"unique_id\":\"%s_warn1\","
+             "\"device\":{\"identifiers\":[\"%s\"]}}",
+             "Air Sensor", "home/CO2/diag", "airsensor", "airsensor");
+
+    TEST("warn1 payload contains name",
+         strstr(payload, "\"name\":\"Air Sensor Warn Threshold 1\"") != NULL);
+    TEST("warn1 payload contains value_template",
+         strstr(payload, "\"value_template\":\"{{ value_json.warn1 }}\"") != NULL);
+    TEST("warn1 payload contains entity_category diagnostic",
+         strstr(payload, "\"entity_category\":\"diagnostic\"") != NULL);
+}
+
 /* --- svoc buffer size ---------------------------------------------------- */
 
 static void suite_svoc_buffer(void) {
@@ -711,6 +942,10 @@ int main(void) {
     suite_poll_command();
     suite_env_parsing();
     suite_retry_logic();
+    suite_data_command();
+    suite_flagget_parsing();
+    suite_knobpre_parsing();
+    suite_diagnostic_discovery();
     suite_svoc_buffer();
 
     printf("\n====================\n");

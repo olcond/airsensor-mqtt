@@ -188,6 +188,90 @@ static int parse_firmware_from_idn_response(const char *response,
 }
 
 /*
+ * Build a data query command with 4-hex-digit sequence number.
+ * Format: "@" + seq4(4 hex) + reqstr + "\n" + "@" padding → 16 bytes
+ */
+static void build_data_command(unsigned short seq4, const char *reqstr, char *cmd) {
+    char tmp[32];
+    snprintf(tmp, sizeof(tmp), "@%04X%s\n@@@@@@@@@@@@@@@@", seq4, reqstr);
+    memcpy(cmd, tmp, 16);
+}
+
+typedef struct {
+    unsigned short warmup;
+    unsigned short burn_in;
+    unsigned short reset_baseline;
+    unsigned short calibrate_heater;
+    unsigned short logging;
+} device_flags_t;
+
+/*
+ * Parse FLAGGET? response.
+ * Finds ';' delimiter, then reads 5 LE16 values at offsets +2, +6, +10, +14, +18.
+ */
+static int parse_flags_response(const unsigned char *data, size_t len, device_flags_t *flags) {
+    const unsigned char *semi = memchr(data, ';', len);
+    if (!semi) return -1;
+    size_t offset = (size_t)(semi - data);
+    if (offset + 20 > len) return -1;
+    flags->warmup           = semi[2]  | ((unsigned short)semi[3]  << 8);
+    flags->burn_in          = semi[6]  | ((unsigned short)semi[7]  << 8);
+    flags->reset_baseline   = semi[10] | ((unsigned short)semi[11] << 8);
+    flags->calibrate_heater = semi[14] | ((unsigned short)semi[15] << 8);
+    flags->logging          = semi[18] | ((unsigned short)semi[19] << 8);
+    return 0;
+}
+
+typedef struct {
+    unsigned short warn1;
+    unsigned short warn2;
+} device_knobs_t;
+
+/*
+ * Parse KNOBPRE? response for warn thresholds.
+ * Searches for "warn1"/"warn2" markers and reads LE16 at marker+22.
+ */
+static int parse_knobs_response(const unsigned char *data, size_t len, device_knobs_t *knobs) {
+    knobs->warn1 = 0;
+    knobs->warn2 = 0;
+    int found = 0;
+    for (size_t i = 0; i + 24 <= len; i++) {
+        if (memcmp(data + i, "warn1", 5) == 0 && i + 24 <= len) {
+            knobs->warn1 = data[i+22] | ((unsigned short)data[i+23] << 8);
+            found = 1;
+        }
+        if (memcmp(data + i, "warn2", 5) == 0 && i + 24 <= len) {
+            knobs->warn2 = data[i+22] | ((unsigned short)data[i+23] << 8);
+            found = 1;
+        }
+    }
+    return found ? 0 : -1;
+}
+
+/*
+ * Send a data query command and read N response chunks.
+ * Returns total bytes read, or -1 on write failure.
+ */
+static int query_device_data(struct usb_dev_handle *handle, const char *reqstr,
+                             unsigned char *resp_buf, int num_chunks, int timeout_ms) {
+    static unsigned short data_seq = 1;
+    char cmd[16];
+    build_data_command(data_seq, reqstr, cmd);
+    data_seq = (data_seq < 0xFFFF) ? (unsigned short)(data_seq + 1) : 1;
+
+    int ret = usb_interrupt_write(handle, 0x00000002, cmd, 16, timeout_ms);
+    if (ret != 16) return -1;
+
+    int total = 0;
+    for (int i = 0; i < num_chunks; i++) {
+        ret = usb_interrupt_read(handle, 0x00000081, (char*)resp_buf + total, 16, timeout_ms);
+        if (ret > 0) total += ret;
+        else break;
+    }
+    return total;
+}
+
+/*
  * Send a Type 1 command (*IDN?) to query device identification.
  * Reads the response into resp_buf (null-terminated string).
  * Returns 0 on success, -1 on failure.
@@ -411,6 +495,51 @@ int main(int argc, char *argv[])
 		usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
 	}
 
+    /* Query device flags (FLAGGET?) for warmup/burn-in status */
+    device_flags_t dev_flags = {0};
+    int flags_valid = 0;
+    {
+        unsigned char flag_resp[48];
+        int flag_len = query_device_data(devh, "FLAGGET?", flag_resp, 3, usb_timeout);
+        if (flag_len > 0 && parse_flags_response(flag_resp, (size_t)flag_len, &dev_flags) == 0) {
+            flags_valid = 1;
+            if (dev_flags.warmup > 0)
+                printf("Warmup: %d min remaining\n", dev_flags.warmup);
+            if (dev_flags.burn_in > 0)
+                printf("Burn-in: %d min remaining\n", dev_flags.burn_in);
+            if (debug == 1) {
+                printout("DEBUG: FLAGGET? query successful", 0);
+                printout("DEBUG: Warmup: ", dev_flags.warmup);
+                printout("DEBUG: Burn-in: ", dev_flags.burn_in);
+                printout("DEBUG: Logging: ", dev_flags.logging);
+            }
+        } else {
+            if (debug == 1)
+                printout("DEBUG: FLAGGET? query failed", 0);
+        }
+        usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
+    }
+
+    /* Query device knobs (KNOBPRE?) for warn thresholds */
+    device_knobs_t dev_knobs = {0};
+    int knobs_valid = 0;
+    {
+        unsigned char knob_resp[256];
+        int knob_len = query_device_data(devh, "KNOBPRE?", knob_resp, 16, usb_timeout);
+        if (knob_len > 0 && parse_knobs_response(knob_resp, (size_t)knob_len, &dev_knobs) == 0) {
+            knobs_valid = 1;
+            if (debug == 1) {
+                printout("DEBUG: KNOBPRE? query successful", 0);
+                printout("DEBUG: warn1 threshold: ", dev_knobs.warn1);
+                printout("DEBUG: warn2 threshold: ", dev_knobs.warn2);
+            }
+        } else {
+            if (debug == 1)
+                printout("DEBUG: KNOBPRE? query failed or no data", 0);
+        }
+        usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
+    }
+
     // Publish Home Assistant MQTT auto-discovery configuration
     char device_block[512];
     if (device_serial[0]) {
@@ -490,6 +619,86 @@ int main(int argc, char *argv[])
     disc_msg.payloadlen = (int)strlen(rs_disc_payload);
     MQTTClient_publishMessage(client, rs_disc_topic, &disc_msg, &disc_token);
     MQTTClient_waitForCompletion(client, disc_token, TIMEOUT);
+
+    // Diagnostic topic for flags/knobs (published once at startup)
+    char diag_topic[256];
+    snprintf(diag_topic, sizeof(diag_topic), "%s/diag", topicname);
+
+    // Warmup discovery (diagnostic)
+    if (flags_valid) {
+        char warmup_disc_topic[256];
+        snprintf(warmup_disc_topic, sizeof(warmup_disc_topic),
+                 "%s/sensor/%s_warmup/config", ha_prefix, clientid);
+        char warmup_disc_payload[1024];
+        snprintf(warmup_disc_payload, sizeof(warmup_disc_payload),
+                 "{\"name\":\"%s Warmup\","
+                 "\"state_topic\":\"%s\","
+                 "\"value_template\":\"{{ value_json.warmup }}\","
+                 "\"unit_of_measurement\":\"min\","
+                 "\"entity_category\":\"diagnostic\","
+                 "\"unique_id\":\"%s_warmup\","
+                 "%s}",
+                 ha_device_name, diag_topic, clientid, device_block);
+        disc_msg.payload = warmup_disc_payload;
+        disc_msg.payloadlen = (int)strlen(warmup_disc_payload);
+        MQTTClient_publishMessage(client, warmup_disc_topic, &disc_msg, &disc_token);
+        MQTTClient_waitForCompletion(client, disc_token, TIMEOUT);
+    }
+
+    // Warn threshold discovery (diagnostic)
+    if (knobs_valid) {
+        char warn1_disc_topic[256];
+        snprintf(warn1_disc_topic, sizeof(warn1_disc_topic),
+                 "%s/sensor/%s_warn1/config", ha_prefix, clientid);
+        char warn1_disc_payload[1024];
+        snprintf(warn1_disc_payload, sizeof(warn1_disc_payload),
+                 "{\"name\":\"%s Warn Threshold 1\","
+                 "\"state_topic\":\"%s\","
+                 "\"value_template\":\"{{ value_json.warn1 }}\","
+                 "\"unit_of_measurement\":\"ppm\","
+                 "\"entity_category\":\"diagnostic\","
+                 "\"unique_id\":\"%s_warn1\","
+                 "%s}",
+                 ha_device_name, diag_topic, clientid, device_block);
+        disc_msg.payload = warn1_disc_payload;
+        disc_msg.payloadlen = (int)strlen(warn1_disc_payload);
+        MQTTClient_publishMessage(client, warn1_disc_topic, &disc_msg, &disc_token);
+        MQTTClient_waitForCompletion(client, disc_token, TIMEOUT);
+
+        char warn2_disc_topic[256];
+        snprintf(warn2_disc_topic, sizeof(warn2_disc_topic),
+                 "%s/sensor/%s_warn2/config", ha_prefix, clientid);
+        char warn2_disc_payload[1024];
+        snprintf(warn2_disc_payload, sizeof(warn2_disc_payload),
+                 "{\"name\":\"%s Warn Threshold 2\","
+                 "\"state_topic\":\"%s\","
+                 "\"value_template\":\"{{ value_json.warn2 }}\","
+                 "\"unit_of_measurement\":\"ppm\","
+                 "\"entity_category\":\"diagnostic\","
+                 "\"unique_id\":\"%s_warn2\","
+                 "%s}",
+                 ha_device_name, diag_topic, clientid, device_block);
+        disc_msg.payload = warn2_disc_payload;
+        disc_msg.payloadlen = (int)strlen(warn2_disc_payload);
+        MQTTClient_publishMessage(client, warn2_disc_topic, &disc_msg, &disc_token);
+        MQTTClient_waitForCompletion(client, disc_token, TIMEOUT);
+    }
+
+    // Publish diagnostic data once at startup
+    if (flags_valid || knobs_valid) {
+        char diag_payload[512];
+        snprintf(diag_payload, sizeof(diag_payload),
+                 "{\"warmup\":%u,\"burn_in\":%u,\"warn1\":%u,\"warn2\":%u}",
+                 dev_flags.warmup, dev_flags.burn_in, dev_knobs.warn1, dev_knobs.warn2);
+        pubmsg.payload = diag_payload;
+        pubmsg.payloadlen = strlen(diag_payload);
+        pubmsg.qos = QOS;
+        pubmsg.retained = 1;
+        MQTTClient_publishMessage(client, diag_topic, &pubmsg, &token);
+        MQTTClient_waitForCompletion(client, token, TIMEOUT);
+        if (debug == 1)
+            printout("DEBUG: Diagnostic data published", 0);
+    }
 
 	int fail_count = 0;
 
