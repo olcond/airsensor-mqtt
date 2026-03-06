@@ -18,6 +18,8 @@
 
 */
 
+#define _GNU_SOURCE
+
 #include <assert.h>
 #include <signal.h>
 #include <stdio.h>
