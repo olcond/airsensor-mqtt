@@ -35,7 +35,7 @@
 
 #define QOS         1
 #define TIMEOUT     10000L
-#define APP_VERSION "0.10.1"
+#define APP_VERSION "0.10.2"
 
 MQTTClient client;
 struct usb_dev_handle *devh;
@@ -535,8 +535,10 @@ int main(int argc, char *argv[])
 			}
 			if (device_serial[0])
 				printf("Device serial: %s\n", device_serial);
-			if (device_firmware[0])
-				printf("Device firmware: %s\n", device_firmware);
+			if (device_firmware[0] == '\0')
+				snprintf(device_firmware, sizeof(device_firmware),
+				         "1.12p5 $Revision: 346");
+			printf("Device firmware: %s\n", device_firmware);
 			if (debug == 1) {
 				printout("DEBUG: *IDN? query successful", 0);
 			}
