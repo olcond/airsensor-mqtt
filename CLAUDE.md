@@ -4,7 +4,7 @@
 
 **airsensor-mqtt** is a Linux USB device driver and MQTT publisher written in C. It reads VOC (Volatile Organic Compound) air quality measurements from a USB air sensor (Atmel 0x03eb:0x2013 — sold under brands like Conrad and REHAU) and publishes the readings to an MQTT broker for home automation integration.
 
-- **Language**: C (single-file application, ~930 lines)
+- **Language**: C (single-file application, ~950 lines)
 - **License**: MIT
 - **Primary deployment**: Docker container (multi-arch: amd64, arm/v7, arm64)
 - **Maintainer**: Veit Olschinski (volschin@googlemail.com)
@@ -17,7 +17,7 @@
 
 ```
 airsensor-mqtt/
-├── airsensor.c                        # Entire application (~930 lines)
+├── airsensor.c                        # Entire application (~950 lines)
 ├── Makefile                           # Build and test targets
 ├── Dockerfile                         # Multi-stage build (builder + scratch runtime)
 ├── .pre-commit-config.yaml            # Git hooks: gitleaks, cpplint, whitespace
@@ -146,8 +146,8 @@ All configuration is done via environment variables. The code uses null-checked 
 11. Query device identification via `query_device_id()` — sends `*IDN?` USB command to retrieve serial number and firmware version, stored in `device_serial` and `device_firmware` globals (`airsensor.c:291–314`)
 12. Query device flags via `FLAGGET?` — retrieves warmup time, burn-in period, and other flags (`airsensor.c:533–553`)
 13. Query warn thresholds via `KNOBPRE?` — retrieves warn1 and warn2 VOC thresholds (`airsensor.c:558–578`)
-14. Publish Home Assistant MQTT auto-discovery configs (retained, QoS 1) for up to six entities — VOC, r_h, r_s (measurement sensors with `state_class`, `availability_topic`, `expire_after`) and warmup, warn1, warn2 (diagnostic sensors with `entity_category`) — to `{HA_DISCOVERY_PREFIX}/sensor/{clientid}[_suffix]/config` (`airsensor.c:580–730`)
-15. Publish one-time diagnostic data (warmup, burn_in, warn1, warn2) as retained JSON on `{MQTT_TOPIC}/diag` (`airsensor.c:735–748`)
+14. Publish Home Assistant MQTT auto-discovery configs (retained, QoS 1) for up to six entities — VOC, r_h, r_s (measurement sensors with `state_class`, `availability_topic`, `expire_after`, `suggested_display_precision`) and warmup, warn1, warn2 (diagnostic sensors with `entity_category`, `availability_topic`) — all with `object_id` and `origin` block — to `{HA_DISCOVERY_PREFIX}/sensor/{clientid}[_suffix]/config` (`airsensor.c:583–745`)
+15. Publish one-time diagnostic data (warmup, burn_in, warn1, warn2) as retained JSON on `{MQTT_TOPIC}/diag` (`airsensor.c:750–763`)
 
 > Note: MQTT connects **before** the USB device is found. If the USB device is never found or
 > fails to open, the MQTT connection is explicitly disconnected and destroyed before `exit(1)`.
@@ -191,7 +191,7 @@ The `release_usb_device()` signal handler at `airsensor.c:100` handles both `SIG
 
 The test file replicates the self-contained logic from `airsensor.c` without requiring USB hardware or an MQTT broker. It uses a minimal custom test runner (no external framework).
 
-**Test suites (164 assertions):**
+**Test suites (181 assertions):**
 
 | Suite | What it tests |
 |-------|--------------|
@@ -202,7 +202,7 @@ The test file replicates the self-contained logic from `airsensor.c` without req
 | r_h parsing | Little-endian extraction of bytes 8–9 (heating resistance) |
 | r_s parsing | 24-bit LE extraction of bytes 12–14 (sensor resistance) |
 | MQTT address assembly | `tcp://host:port` string construction |
-| HA discovery | Discovery topic format, required JSON fields incl. `state_class`, `availability_topic`, `expire_after` |
+| HA discovery | Discovery topic format, required JSON fields incl. `state_class`, `availability_topic`, `expire_after`, `object_id`, `origin`, `icon`, `suggested_display_precision` |
 | `*IDN?` parsing | Serial number and firmware extraction from device response |
 | JSON payload | Consolidated JSON state payload format |
 | Poll command | Sequenced poll command building and sequence number wrapping |
@@ -211,7 +211,7 @@ The test file replicates the self-contained logic from `airsensor.c` without req
 | Data command | `FLAGGET?`/`KNOBPRE?`/`*IDN?` command building with sequence numbers |
 | FLAGGET? parsing | Device flags (warmup, burn_in, etc.) extraction |
 | KNOBPRE? parsing | Warn threshold extraction |
-| Diagnostic discovery | Diagnostic entity discovery payloads with `entity_category` |
+| Diagnostic discovery | Diagnostic entity discovery payloads with `entity_category`, `availability_topic`, `object_id`, `origin` |
 | `svoc` buffer size | Documents and verifies the known buffer-size issue for 5-digit values |
 
 **Run tests:**
@@ -352,8 +352,9 @@ PRs to update:
 ## Key Constants (`airsensor.c`)
 
 ```c
-#define QOS       1         // MQTT QoS level
-#define TIMEOUT   10000L    // MQTT operation timeout (ms)
+#define QOS         1         // MQTT QoS level
+#define TIMEOUT     10000L    // MQTT operation timeout (ms)
+#define APP_VERSION "0.10.0"  // Used in HA discovery origin block
 
 // USB device identifiers
 vendor  = 0x03eb  // Atmel

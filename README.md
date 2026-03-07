@@ -268,10 +268,16 @@ Beim Start werden Discovery-Nachrichten fuer folgende Entitaeten publiziert:
 | Warn Threshold 1 | `_warn1` | Warnschwelle 1 (ppm, diagnostisch) |
 | Warn Threshold 2 | `_warn2` | Warnschwelle 2 (ppm, diagnostisch) |
 
-Die Mess-Entitaeten (VOC, r_h, r_s) enthalten:
-- `state_class: measurement` fuer Langzeitstatistiken
+Alle Entitaeten enthalten:
+- `object_id` fuer vorhersagbare Entity-IDs (z.B. `sensor.airsensor_voc`)
+- `origin` Block mit Integrationsname, Version und Support-URL
 - `availability_topic` fuer Online/Offline-Erkennung
+
+Die Mess-Entitaeten (VOC, r_h, r_s) enthalten zusaetzlich:
+- `state_class: measurement` fuer Langzeitstatistiken
+- `suggested_display_precision` (VOC: 0, r_h: 2, r_s: 0)
 - `expire_after` (3× Messintervall) zum automatischen Markieren als unverfuegbar
+- `icon: mdi:resistor` fuer die Widerstandssensoren (r_h, r_s)
 
 Die diagnostischen Entitaeten (Warmup, Warn-Schwellen) werden nur publiziert, wenn der Sensor die entsprechenden Abfragen (`FLAGGET?`, `KNOBPRE?`) unterstuetzt.
 
@@ -280,11 +286,13 @@ Die VOC-Discovery-Konfiguration sieht beispielsweise so aus:
 ```json
 {
   "name": "Air Sensor VOC",
+  "object_id": "airsensor_voc",
   "state_topic": "home/CO2/voc",
   "value_template": "{{ value_json.voc }}",
   "unit_of_measurement": "ppm",
   "device_class": "volatile_organic_compounds_parts",
   "state_class": "measurement",
+  "suggested_display_precision": 0,
   "unique_id": "airsensor_voc",
   "availability_topic": "home/CO2/voc/availability",
   "expire_after": 90,
@@ -295,6 +303,11 @@ Die VOC-Discovery-Konfiguration sieht beispielsweise so aus:
     "manufacturer": "Atmel",
     "serial_number": "ABC123",
     "sw_version": "1.0"
+  },
+  "origin": {
+    "name": "airsensor-mqtt",
+    "sw_version": "0.10.0",
+    "support_url": "https://github.com/olcond/airsensor-mqtt"
   }
 }
 ```
@@ -400,7 +413,7 @@ Alle Umgebungsvariablen haben Standardwerte und sind optional. Falls dennoch ein
 
 ### Projektstruktur
 
-Das gesamte Programm besteht aus einer einzigen Quelldatei (`airsensor.c`, ~930 Zeilen). Unit-Tests (164 Assertions) befinden sich in `tests/test_airsensor.c` und koennen ohne Hardware ausgefuehrt werden (`make test`).
+Das gesamte Programm besteht aus einer einzigen Quelldatei (`airsensor.c`, ~950 Zeilen). Unit-Tests (181 Assertions) befinden sich in `tests/test_airsensor.c` und koennen ohne Hardware ausgefuehrt werden (`make test`).
 
 ### Kompilieren und testen
 
