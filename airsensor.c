@@ -35,6 +35,7 @@
 
 #define QOS         1
 #define TIMEOUT     10000L
+#define APP_VERSION "1.5.0"
 
 MQTTClient client;
 struct usb_dev_handle *devh;
@@ -575,6 +576,11 @@ int main(int argc, char *argv[])
     }
 
     // Publish Home Assistant MQTT auto-discovery configuration
+    const char *origin_block =
+        "\"origin\":{\"name\":\"airsensor-mqtt\","
+        "\"sw_version\":\"" APP_VERSION "\","
+        "\"support_url\":\"https://github.com/olcond/airsensor-mqtt\"}";
+
     char device_block[512];
     if (device_serial[0]) {
         snprintf(device_block, sizeof(device_block),
@@ -603,20 +609,22 @@ int main(int argc, char *argv[])
     char discovery_topic[256];
     snprintf(discovery_topic, sizeof(discovery_topic),
              "%s/sensor/%s/config", ha_prefix, clientid);
-    char discovery_payload[1024];
+    char discovery_payload[1536];
     snprintf(discovery_payload, sizeof(discovery_payload),
              "{\"name\":\"%s VOC\","
+             "\"object_id\":\"%s_voc\","
              "\"state_topic\":\"%s\","
              "\"value_template\":\"{{ value_json.voc }}\","
              "\"unit_of_measurement\":\"ppm\","
              "\"device_class\":\"volatile_organic_compounds_parts\","
              "\"state_class\":\"measurement\","
+             "\"suggested_display_precision\":0,"
              "\"unique_id\":\"%s_voc\","
              "\"availability_topic\":\"%s\","
              "\"expire_after\":%d,"
-             "%s}",
-             ha_device_name, topicname, clientid,
-             avail_topic, expire_after, device_block);
+             "%s,%s}",
+             ha_device_name, clientid, topicname, clientid,
+             avail_topic, expire_after, device_block, origin_block);
     disc_msg.payload = discovery_payload;
     disc_msg.payloadlen = (int)strlen(discovery_payload);
     MQTTClient_publishMessage(client, discovery_topic, &disc_msg, &disc_token);
@@ -626,19 +634,22 @@ int main(int argc, char *argv[])
     char rh_disc_topic[256];
     snprintf(rh_disc_topic, sizeof(rh_disc_topic),
              "%s/sensor/%s_rh/config", ha_prefix, clientid);
-    char rh_disc_payload[1024];
+    char rh_disc_payload[1536];
     snprintf(rh_disc_payload, sizeof(rh_disc_payload),
              "{\"name\":\"%s Heating Resistance\","
+             "\"object_id\":\"%s_rh\","
+             "\"icon\":\"mdi:resistor\","
              "\"state_topic\":\"%s\","
              "\"value_template\":\"{{ value_json.r_h }}\","
              "\"unit_of_measurement\":\"Ω\","
              "\"state_class\":\"measurement\","
+             "\"suggested_display_precision\":2,"
              "\"unique_id\":\"%s_rh\","
              "\"availability_topic\":\"%s\","
              "\"expire_after\":%d,"
-             "%s}",
-             ha_device_name, topicname, clientid,
-             avail_topic, expire_after, device_block);
+             "%s,%s}",
+             ha_device_name, clientid, topicname, clientid,
+             avail_topic, expire_after, device_block, origin_block);
     disc_msg.payload = rh_disc_payload;
     disc_msg.payloadlen = (int)strlen(rh_disc_payload);
     MQTTClient_publishMessage(client, rh_disc_topic, &disc_msg, &disc_token);
@@ -648,19 +659,22 @@ int main(int argc, char *argv[])
     char rs_disc_topic[256];
     snprintf(rs_disc_topic, sizeof(rs_disc_topic),
              "%s/sensor/%s_rs/config", ha_prefix, clientid);
-    char rs_disc_payload[1024];
+    char rs_disc_payload[1536];
     snprintf(rs_disc_payload, sizeof(rs_disc_payload),
              "{\"name\":\"%s Sensor Resistance\","
+             "\"object_id\":\"%s_rs\","
+             "\"icon\":\"mdi:resistor\","
              "\"state_topic\":\"%s\","
              "\"value_template\":\"{{ value_json.r_s }}\","
              "\"unit_of_measurement\":\"Ω\","
              "\"state_class\":\"measurement\","
+             "\"suggested_display_precision\":0,"
              "\"unique_id\":\"%s_rs\","
              "\"availability_topic\":\"%s\","
              "\"expire_after\":%d,"
-             "%s}",
-             ha_device_name, topicname, clientid,
-             avail_topic, expire_after, device_block);
+             "%s,%s}",
+             ha_device_name, clientid, topicname, clientid,
+             avail_topic, expire_after, device_block, origin_block);
     disc_msg.payload = rs_disc_payload;
     disc_msg.payloadlen = (int)strlen(rs_disc_payload);
     MQTTClient_publishMessage(client, rs_disc_topic, &disc_msg, &disc_token);
@@ -675,16 +689,19 @@ int main(int argc, char *argv[])
         char warmup_disc_topic[256];
         snprintf(warmup_disc_topic, sizeof(warmup_disc_topic),
                  "%s/sensor/%s_warmup/config", ha_prefix, clientid);
-        char warmup_disc_payload[1024];
+        char warmup_disc_payload[1536];
         snprintf(warmup_disc_payload, sizeof(warmup_disc_payload),
                  "{\"name\":\"%s Warmup\","
+                 "\"object_id\":\"%s_warmup\","
                  "\"state_topic\":\"%s\","
                  "\"value_template\":\"{{ value_json.warmup }}\","
                  "\"unit_of_measurement\":\"min\","
                  "\"entity_category\":\"diagnostic\","
                  "\"unique_id\":\"%s_warmup\","
-                 "%s}",
-                 ha_device_name, diag_topic, clientid, device_block);
+                 "\"availability_topic\":\"%s\","
+                 "%s,%s}",
+                 ha_device_name, clientid, diag_topic, clientid,
+                 avail_topic, device_block, origin_block);
         disc_msg.payload = warmup_disc_payload;
         disc_msg.payloadlen = (int)strlen(warmup_disc_payload);
         MQTTClient_publishMessage(client, warmup_disc_topic, &disc_msg, &disc_token);
@@ -696,16 +713,19 @@ int main(int argc, char *argv[])
         char warn1_disc_topic[256];
         snprintf(warn1_disc_topic, sizeof(warn1_disc_topic),
                  "%s/sensor/%s_warn1/config", ha_prefix, clientid);
-        char warn1_disc_payload[1024];
+        char warn1_disc_payload[1536];
         snprintf(warn1_disc_payload, sizeof(warn1_disc_payload),
                  "{\"name\":\"%s Warn Threshold 1\","
+                 "\"object_id\":\"%s_warn1\","
                  "\"state_topic\":\"%s\","
                  "\"value_template\":\"{{ value_json.warn1 }}\","
                  "\"unit_of_measurement\":\"ppm\","
                  "\"entity_category\":\"diagnostic\","
                  "\"unique_id\":\"%s_warn1\","
-                 "%s}",
-                 ha_device_name, diag_topic, clientid, device_block);
+                 "\"availability_topic\":\"%s\","
+                 "%s,%s}",
+                 ha_device_name, clientid, diag_topic, clientid,
+                 avail_topic, device_block, origin_block);
         disc_msg.payload = warn1_disc_payload;
         disc_msg.payloadlen = (int)strlen(warn1_disc_payload);
         MQTTClient_publishMessage(client, warn1_disc_topic, &disc_msg, &disc_token);
@@ -714,16 +734,19 @@ int main(int argc, char *argv[])
         char warn2_disc_topic[256];
         snprintf(warn2_disc_topic, sizeof(warn2_disc_topic),
                  "%s/sensor/%s_warn2/config", ha_prefix, clientid);
-        char warn2_disc_payload[1024];
+        char warn2_disc_payload[1536];
         snprintf(warn2_disc_payload, sizeof(warn2_disc_payload),
                  "{\"name\":\"%s Warn Threshold 2\","
+                 "\"object_id\":\"%s_warn2\","
                  "\"state_topic\":\"%s\","
                  "\"value_template\":\"{{ value_json.warn2 }}\","
                  "\"unit_of_measurement\":\"ppm\","
                  "\"entity_category\":\"diagnostic\","
                  "\"unique_id\":\"%s_warn2\","
-                 "%s}",
-                 ha_device_name, diag_topic, clientid, device_block);
+                 "\"availability_topic\":\"%s\","
+                 "%s,%s}",
+                 ha_device_name, clientid, diag_topic, clientid,
+                 avail_topic, device_block, origin_block);
         disc_msg.payload = warn2_disc_payload;
         disc_msg.payloadlen = (int)strlen(warn2_disc_payload);
         MQTTClient_publishMessage(client, warn2_disc_topic, &disc_msg, &disc_token);

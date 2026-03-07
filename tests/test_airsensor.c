@@ -377,19 +377,24 @@ static void build_discovery_payload(char *payload, size_t size,
                                     int expire_after) {
     snprintf(payload, size,
              "{\"name\":\"%s VOC\","
+             "\"object_id\":\"%s_voc\","
              "\"state_topic\":\"%s\","
              "\"value_template\":\"{{ value_json.voc }}\","
              "\"unit_of_measurement\":\"ppm\","
              "\"device_class\":\"volatile_organic_compounds_parts\","
              "\"state_class\":\"measurement\","
+             "\"suggested_display_precision\":0,"
              "\"unique_id\":\"%s_voc\","
              "\"availability_topic\":\"%s\","
              "\"expire_after\":%d,"
              "\"device\":{\"identifiers\":[\"%s\"],"
              "\"name\":\"%s\","
              "\"model\":\"USB VOC Sensor\","
-             "\"manufacturer\":\"Atmel\"}}",
-             device_name, state_topic, clientid,
+             "\"manufacturer\":\"Atmel\"},"
+             "\"origin\":{\"name\":\"airsensor-mqtt\","
+             "\"sw_version\":\"test\","
+             "\"support_url\":\"https://github.com/olcond/airsensor-mqtt\"}}",
+             device_name, clientid, state_topic, clientid,
              avail_topic, expire_after,
              clientid, device_name);
 }
@@ -402,18 +407,24 @@ static void build_rh_discovery_payload(char *payload, size_t size,
                                        int expire_after) {
     snprintf(payload, size,
              "{\"name\":\"%s Heating Resistance\","
+             "\"object_id\":\"%s_rh\","
+             "\"icon\":\"mdi:resistor\","
              "\"state_topic\":\"%s\","
              "\"value_template\":\"{{ value_json.r_h }}\","
              "\"unit_of_measurement\":\"Ω\","
              "\"state_class\":\"measurement\","
+             "\"suggested_display_precision\":2,"
              "\"unique_id\":\"%s_rh\","
              "\"availability_topic\":\"%s\","
              "\"expire_after\":%d,"
              "\"device\":{\"identifiers\":[\"%s\"],"
              "\"name\":\"%s\","
              "\"model\":\"USB VOC Sensor\","
-             "\"manufacturer\":\"Atmel\"}}",
-             device_name, state_topic, clientid,
+             "\"manufacturer\":\"Atmel\"},"
+             "\"origin\":{\"name\":\"airsensor-mqtt\","
+             "\"sw_version\":\"test\","
+             "\"support_url\":\"https://github.com/olcond/airsensor-mqtt\"}}",
+             device_name, clientid, state_topic, clientid,
              avail_topic, expire_after,
              clientid, device_name);
 }
@@ -426,18 +437,24 @@ static void build_rs_discovery_payload(char *payload, size_t size,
                                        int expire_after) {
     snprintf(payload, size,
              "{\"name\":\"%s Sensor Resistance\","
+             "\"object_id\":\"%s_rs\","
+             "\"icon\":\"mdi:resistor\","
              "\"state_topic\":\"%s\","
              "\"value_template\":\"{{ value_json.r_s }}\","
              "\"unit_of_measurement\":\"Ω\","
              "\"state_class\":\"measurement\","
+             "\"suggested_display_precision\":0,"
              "\"unique_id\":\"%s_rs\","
              "\"availability_topic\":\"%s\","
              "\"expire_after\":%d,"
              "\"device\":{\"identifiers\":[\"%s\"],"
              "\"name\":\"%s\","
              "\"model\":\"USB VOC Sensor\","
-             "\"manufacturer\":\"Atmel\"}}",
-             device_name, state_topic, clientid,
+             "\"manufacturer\":\"Atmel\"},"
+             "\"origin\":{\"name\":\"airsensor-mqtt\","
+             "\"sw_version\":\"test\","
+             "\"support_url\":\"https://github.com/olcond/airsensor-mqtt\"}}",
+             device_name, clientid, state_topic, clientid,
              avail_topic, expire_after,
              clientid, device_name);
 }
@@ -459,12 +476,14 @@ static void suite_ha_discovery(void) {
     TEST("custom clientid: homeassistant/sensor/wohnzimmer/config",
          strcmp(topic, "homeassistant/sensor/wohnzimmer/config") == 0);
 
-    char payload[1024];
+    char payload[2048];
 
     /* VOC discovery payload — default poll_interval=30 → expire_after=90 */
     build_discovery_payload(payload, sizeof(payload),
                             "Air Sensor", "home/CO2/state", "airsensor",
                             "home/CO2/state/availability", 90);
+    TEST("VOC payload contains object_id",
+         strstr(payload, "\"object_id\":\"airsensor_voc\"") != NULL);
     TEST("VOC payload contains state_topic",
          strstr(payload, "\"state_topic\":\"home/CO2/state\"") != NULL);
     TEST("VOC payload contains value_template for voc",
@@ -475,12 +494,18 @@ static void suite_ha_discovery(void) {
          strstr(payload, "\"device_class\":\"volatile_organic_compounds_parts\"") != NULL);
     TEST("VOC payload contains state_class measurement",
          strstr(payload, "\"state_class\":\"measurement\"") != NULL);
+    TEST("VOC payload contains suggested_display_precision 0",
+         strstr(payload, "\"suggested_display_precision\":0") != NULL);
     TEST("VOC payload contains unique_id",
          strstr(payload, "\"unique_id\":\"airsensor_voc\"") != NULL);
     TEST("VOC payload contains availability_topic",
          strstr(payload, "\"availability_topic\":\"home/CO2/state/availability\"") != NULL);
     TEST("VOC payload contains expire_after 90",
          strstr(payload, "\"expire_after\":90") != NULL);
+    TEST("VOC payload contains origin name",
+         strstr(payload, "\"origin\":{\"name\":\"airsensor-mqtt\"") != NULL);
+    TEST("VOC payload contains origin support_url",
+         strstr(payload, "\"support_url\":\"https://github.com/olcond/airsensor-mqtt\"") != NULL);
 
     /* r_h (heating resistance) discovery payload */
     build_rh_discovery_payload(payload, sizeof(payload),
@@ -488,18 +513,26 @@ static void suite_ha_discovery(void) {
                                "home/CO2/state/availability", 90);
     TEST("r_h payload contains name 'Heating Resistance'",
          strstr(payload, "\"name\":\"Air Sensor Heating Resistance\"") != NULL);
+    TEST("r_h payload contains object_id",
+         strstr(payload, "\"object_id\":\"airsensor_rh\"") != NULL);
+    TEST("r_h payload contains icon mdi:resistor",
+         strstr(payload, "\"icon\":\"mdi:resistor\"") != NULL);
     TEST("r_h payload contains value_template for r_h",
          strstr(payload, "\"value_template\":\"{{ value_json.r_h }}\"") != NULL);
     TEST("r_h payload contains unit Ω",
          strstr(payload, "\"unit_of_measurement\":\"Ω\"") != NULL);
     TEST("r_h payload contains state_class measurement",
          strstr(payload, "\"state_class\":\"measurement\"") != NULL);
+    TEST("r_h payload contains suggested_display_precision 2",
+         strstr(payload, "\"suggested_display_precision\":2") != NULL);
     TEST("r_h payload contains unique_id airsensor_rh",
          strstr(payload, "\"unique_id\":\"airsensor_rh\"") != NULL);
     TEST("r_h payload contains availability_topic",
          strstr(payload, "\"availability_topic\":\"home/CO2/state/availability\"") != NULL);
     TEST("r_h payload contains expire_after",
          strstr(payload, "\"expire_after\":90") != NULL);
+    TEST("r_h payload contains origin",
+         strstr(payload, "\"origin\":{\"name\":\"airsensor-mqtt\"") != NULL);
 
     /* r_s (sensor resistance) discovery payload */
     build_rs_discovery_payload(payload, sizeof(payload),
@@ -507,18 +540,26 @@ static void suite_ha_discovery(void) {
                                "home/CO2/state/availability", 90);
     TEST("r_s payload contains name 'Sensor Resistance'",
          strstr(payload, "\"name\":\"Air Sensor Sensor Resistance\"") != NULL);
+    TEST("r_s payload contains object_id",
+         strstr(payload, "\"object_id\":\"airsensor_rs\"") != NULL);
+    TEST("r_s payload contains icon mdi:resistor",
+         strstr(payload, "\"icon\":\"mdi:resistor\"") != NULL);
     TEST("r_s payload contains value_template for r_s",
          strstr(payload, "\"value_template\":\"{{ value_json.r_s }}\"") != NULL);
     TEST("r_s payload contains unit Ω",
          strstr(payload, "\"unit_of_measurement\":\"Ω\"") != NULL);
     TEST("r_s payload contains state_class measurement",
          strstr(payload, "\"state_class\":\"measurement\"") != NULL);
+    TEST("r_s payload contains suggested_display_precision 0",
+         strstr(payload, "\"suggested_display_precision\":0") != NULL);
     TEST("r_s payload contains unique_id airsensor_rs",
          strstr(payload, "\"unique_id\":\"airsensor_rs\"") != NULL);
     TEST("r_s payload contains availability_topic",
          strstr(payload, "\"availability_topic\":\"home/CO2/state/availability\"") != NULL);
     TEST("r_s payload contains expire_after",
          strstr(payload, "\"expire_after\":90") != NULL);
+    TEST("r_s payload contains origin",
+         strstr(payload, "\"origin\":{\"name\":\"airsensor-mqtt\"") != NULL);
 
     /* expire_after scales with poll_interval */
     build_discovery_payload(payload, sizeof(payload),
@@ -905,21 +946,29 @@ static void suite_knobpre_parsing(void) {
 static void suite_diagnostic_discovery(void) {
     print_header("Diagnostic HA discovery (warmup, warn thresholds)");
 
-    char payload[1024];
+    char payload[2048];
 
     /* Warmup diagnostic sensor */
     snprintf(payload, sizeof(payload),
              "{\"name\":\"%s Warmup\","
+             "\"object_id\":\"%s_warmup\","
              "\"state_topic\":\"%s\","
              "\"value_template\":\"{{ value_json.warmup }}\","
              "\"unit_of_measurement\":\"min\","
              "\"entity_category\":\"diagnostic\","
              "\"unique_id\":\"%s_warmup\","
-             "\"device\":{\"identifiers\":[\"%s\"]}}",
-             "Air Sensor", "home/CO2/state", "airsensor", "airsensor");
+             "\"availability_topic\":\"%s\","
+             "\"device\":{\"identifiers\":[\"%s\"]},"
+             "\"origin\":{\"name\":\"airsensor-mqtt\","
+             "\"sw_version\":\"test\","
+             "\"support_url\":\"https://github.com/olcond/airsensor-mqtt\"}}",
+             "Air Sensor", "airsensor", "home/CO2/state", "airsensor",
+             "home/CO2/state/availability", "airsensor");
 
     TEST("warmup payload contains name",
          strstr(payload, "\"name\":\"Air Sensor Warmup\"") != NULL);
+    TEST("warmup payload contains object_id",
+         strstr(payload, "\"object_id\":\"airsensor_warmup\"") != NULL);
     TEST("warmup payload contains value_template",
          strstr(payload, "\"value_template\":\"{{ value_json.warmup }}\"") != NULL);
     TEST("warmup payload contains unit min",
@@ -928,24 +977,40 @@ static void suite_diagnostic_discovery(void) {
          strstr(payload, "\"entity_category\":\"diagnostic\"") != NULL);
     TEST("warmup payload contains unique_id",
          strstr(payload, "\"unique_id\":\"airsensor_warmup\"") != NULL);
+    TEST("warmup payload contains availability_topic",
+         strstr(payload, "\"availability_topic\":\"home/CO2/state/availability\"") != NULL);
+    TEST("warmup payload contains origin",
+         strstr(payload, "\"origin\":{\"name\":\"airsensor-mqtt\"") != NULL);
 
     /* Warn1 threshold diagnostic sensor */
     snprintf(payload, sizeof(payload),
              "{\"name\":\"%s Warn Threshold 1\","
+             "\"object_id\":\"%s_warn1\","
              "\"state_topic\":\"%s\","
              "\"value_template\":\"{{ value_json.warn1 }}\","
              "\"unit_of_measurement\":\"ppm\","
              "\"entity_category\":\"diagnostic\","
              "\"unique_id\":\"%s_warn1\","
-             "\"device\":{\"identifiers\":[\"%s\"]}}",
-             "Air Sensor", "home/CO2/diag", "airsensor", "airsensor");
+             "\"availability_topic\":\"%s\","
+             "\"device\":{\"identifiers\":[\"%s\"]},"
+             "\"origin\":{\"name\":\"airsensor-mqtt\","
+             "\"sw_version\":\"test\","
+             "\"support_url\":\"https://github.com/olcond/airsensor-mqtt\"}}",
+             "Air Sensor", "airsensor", "home/CO2/diag", "airsensor",
+             "home/CO2/diag/availability", "airsensor");
 
     TEST("warn1 payload contains name",
          strstr(payload, "\"name\":\"Air Sensor Warn Threshold 1\"") != NULL);
+    TEST("warn1 payload contains object_id",
+         strstr(payload, "\"object_id\":\"airsensor_warn1\"") != NULL);
     TEST("warn1 payload contains value_template",
          strstr(payload, "\"value_template\":\"{{ value_json.warn1 }}\"") != NULL);
     TEST("warn1 payload contains entity_category diagnostic",
          strstr(payload, "\"entity_category\":\"diagnostic\"") != NULL);
+    TEST("warn1 payload contains availability_topic",
+         strstr(payload, "\"availability_topic\":\"home/CO2/diag/availability\"") != NULL);
+    TEST("warn1 payload contains origin",
+         strstr(payload, "\"origin\":{\"name\":\"airsensor-mqtt\"") != NULL);
 }
 
 /* --- svoc buffer size ---------------------------------------------------- */
