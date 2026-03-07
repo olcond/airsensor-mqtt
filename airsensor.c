@@ -35,7 +35,7 @@
 
 #define QOS         1
 #define TIMEOUT     10000L
-#define APP_VERSION "1.5.0"
+#define APP_VERSION "0.10.0"
 
 MQTTClient client;
 struct usb_dev_handle *devh;
