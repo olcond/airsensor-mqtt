@@ -390,7 +390,7 @@ static void build_discovery_payload(char *payload, size_t size,
              "\"device\":{\"identifiers\":[\"%s\"],"
              "\"name\":\"%s\","
              "\"model\":\"USB VOC Sensor\","
-             "\"manufacturer\":\"Atmel\"},"
+             "\"manufacturer\":\"AppliedSensor\"},"
              "\"origin\":{\"name\":\"airsensor-mqtt\","
              "\"sw_version\":\"test\","
              "\"support_url\":\"https://github.com/olcond/airsensor-mqtt\"}}",
@@ -420,7 +420,7 @@ static void build_rh_discovery_payload(char *payload, size_t size,
              "\"device\":{\"identifiers\":[\"%s\"],"
              "\"name\":\"%s\","
              "\"model\":\"USB VOC Sensor\","
-             "\"manufacturer\":\"Atmel\"},"
+             "\"manufacturer\":\"AppliedSensor\"},"
              "\"origin\":{\"name\":\"airsensor-mqtt\","
              "\"sw_version\":\"test\","
              "\"support_url\":\"https://github.com/olcond/airsensor-mqtt\"}}",
@@ -450,7 +450,7 @@ static void build_rs_discovery_payload(char *payload, size_t size,
              "\"device\":{\"identifiers\":[\"%s\"],"
              "\"name\":\"%s\","
              "\"model\":\"USB VOC Sensor\","
-             "\"manufacturer\":\"Atmel\"},"
+             "\"manufacturer\":\"AppliedSensor\"},"
              "\"origin\":{\"name\":\"airsensor-mqtt\","
              "\"sw_version\":\"test\","
              "\"support_url\":\"https://github.com/olcond/airsensor-mqtt\"}}",

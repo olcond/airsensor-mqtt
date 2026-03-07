@@ -35,12 +35,14 @@
 
 #define QOS         1
 #define TIMEOUT     10000L
-#define APP_VERSION "0.10.0"
+#define APP_VERSION "0.10.1"
 
 MQTTClient client;
 struct usb_dev_handle *devh;
 char device_serial[20] = "";
 char device_firmware[20] = "";
+char device_manufacturer[64] = "";
+char device_product[64] = "";
 char g_avail_topic[256] = "";
 
 /*
@@ -460,6 +462,22 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
+	if (dev->descriptor.iManufacturer) {
+		usb_get_string_simple(devh, dev->descriptor.iManufacturer,
+		                      device_manufacturer, sizeof(device_manufacturer));
+	}
+	if (dev->descriptor.iProduct) {
+		usb_get_string_simple(devh, dev->descriptor.iProduct,
+		                      device_product, sizeof(device_product));
+	}
+
+	if (debug == 1) {
+		if (device_manufacturer[0])
+			printf("Manufacturer: %s\n", device_manufacturer);
+		if (device_product[0])
+			printf("Product: %s\n", device_product);
+	}
+
 	signal(SIGTERM, release_usb_device);
 	signal(SIGINT,  release_usb_device);
 
@@ -581,23 +599,26 @@ int main(int argc, char *argv[])
         "\"sw_version\":\"" APP_VERSION "\","
         "\"support_url\":\"https://github.com/olcond/airsensor-mqtt\"}";
 
+    const char *manufacturer = device_manufacturer[0] ? device_manufacturer : "AppliedSensor";
+    const char *model = device_product[0] ? device_product : "USB VOC Sensor";
+
     char device_block[512];
     if (device_serial[0]) {
         snprintf(device_block, sizeof(device_block),
                  "\"device\":{\"identifiers\":[\"%s\"],"
                  "\"name\":\"%s\","
-                 "\"model\":\"USB VOC Sensor\","
-                 "\"manufacturer\":\"Atmel\","
+                 "\"model\":\"%s\","
+                 "\"manufacturer\":\"%s\","
                  "\"serial_number\":\"%s\","
                  "\"sw_version\":\"%s\"}",
-                 clientid, ha_device_name, device_serial, (device_firmware[0] ? device_firmware : "unknown"));
+                 clientid, ha_device_name, model, manufacturer, device_serial, (device_firmware[0] ? device_firmware : "unknown"));
     } else {
         snprintf(device_block, sizeof(device_block),
                  "\"device\":{\"identifiers\":[\"%s\"],"
                  "\"name\":\"%s\","
-                 "\"model\":\"USB VOC Sensor\","
-                 "\"manufacturer\":\"Atmel\"}",
-                 clientid, ha_device_name);
+                 "\"model\":\"%s\","
+                 "\"manufacturer\":\"%s\"}",
+                 clientid, ha_device_name, model, manufacturer);
     }
 
     MQTTClient_message disc_msg = MQTTClient_message_initializer;
