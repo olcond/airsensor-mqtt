@@ -1,6 +1,6 @@
 CC      = gcc
 CFLAGS  = -Wall -Wextra -std=c11
-LDFLAGS = -lusb -lpaho-mqtt3c -lpthread
+LDFLAGS = -lusb-1.0 -lpaho-mqtt3c -lpthread
 
 BIN     = airsensor
 TEST    = tests/test_airsensor

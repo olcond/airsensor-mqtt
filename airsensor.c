@@ -10,11 +10,11 @@
 
     requirement:
 
-    libusb libpaho-mqtt3c libpthread
+    libusb-1.0 libpaho-mqtt3c libpthread
 
     compile:
 
-    gcc -o airsensor airsensor.c -lusb -lpaho-mqtt3c -lpthread
+    gcc -o airsensor airsensor.c -lusb-1.0 -lpaho-mqtt3c -lpthread
 
 */
 
@@ -25,7 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <usb.h>
+#include <libusb-1.0/libusb.h>
 #include <endian.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -40,7 +40,7 @@
 int log_level = LOG_LEVEL_INFO;
 
 MQTTClient client;
-struct usb_dev_handle *devh;
+libusb_device_handle *devh;
 char device_serial[20] = "";
 char device_firmware[20] = "";
 char device_manufacturer[64] = "";
@@ -71,40 +71,25 @@ void release_usb_device(int dummy) {
     shutdown_requested = 1;
 }
 
-struct usb_device* find_device(int vendor, int product) {
-    struct usb_bus *bus;
-
-    for (bus = usb_get_busses(); bus; bus = bus->next) {
-        struct usb_device *dev;
-
-        for (dev = bus->devices; dev; dev = dev->next) {
-            if (dev->descriptor.idVendor == vendor
-                && dev->descriptor.idProduct == product)
-            return dev;
-        }
-    }
-    return NULL;
-}
-
-
 /*
  * Send a data query command and read N response chunks.
  * Returns total bytes read, or -1 on write failure.
  */
-static int query_device_data(struct usb_dev_handle *handle, const char *reqstr,
+static int query_device_data(libusb_device_handle *handle, const char *reqstr,
                              unsigned char *resp_buf, int num_chunks, int timeout_ms) {
     static unsigned short data_seq = 1;
     char cmd[16];
     build_data_command(data_seq, reqstr, cmd);
     data_seq = (data_seq < 0xFFFF) ? (unsigned short)(data_seq + 1) : 1;
 
-    int ret = usb_interrupt_write(handle, 0x00000002, cmd, 16, timeout_ms);
-    if (ret != 16) return -1;
+    int transferred;
+    int ret = libusb_interrupt_transfer(handle, 0x02, (unsigned char*)cmd, 16, &transferred, timeout_ms);
+    if (ret != 0 || transferred != 16) return -1;
 
     int total = 0;
     for (int i = 0; i < num_chunks; i++) {
-        ret = usb_interrupt_read(handle, 0x00000081, (char*)resp_buf + total, 16, timeout_ms);
-        if (ret > 0) total += ret;
+        ret = libusb_interrupt_transfer(handle, 0x81, resp_buf + total, 16, &transferred, timeout_ms);
+        if (ret == 0 && transferred > 0) total += transferred;
         else break;
     }
     return total;
@@ -115,24 +100,25 @@ static int query_device_data(struct usb_dev_handle *handle, const char *reqstr,
  * Reads the response into resp_buf (null-terminated string).
  * Returns 0 on success, -1 on failure.
  */
-int query_device_id(struct usb_dev_handle *handle, char *resp_buf, size_t resp_size, int timeout_ms) {
+int query_device_id(libusb_device_handle *handle, char *resp_buf, size_t resp_size, int timeout_ms) {
     static unsigned short idn_seq = 1;
     char cmd[17];
     snprintf(cmd, sizeof(cmd), "@%04X*IDN?\n@@@@@", idn_seq);
     idn_seq = (idn_seq < 0xFFFF) ? (unsigned short)(idn_seq + 1) : 1;
-    int ret = usb_interrupt_write(handle, 0x00000002, cmd, 16, timeout_ms);
-    if (ret < 0) return -1;
+    int transferred;
+    int ret = libusb_interrupt_transfer(handle, 0x02, (unsigned char*)cmd, 16, &transferred, timeout_ms);
+    if (ret != 0) return -1;
 
     size_t total = 0;
-    char chunk[16];
+    unsigned char chunk[16];
     int attempts = 0;
     while (total < resp_size - 1 && attempts < 10) {
-        ret = usb_interrupt_read(handle, 0x00000081, chunk, 16, timeout_ms);
-        if (ret <= 0) break;
+        ret = libusb_interrupt_transfer(handle, 0x81, chunk, 16, &transferred, timeout_ms);
+        if (ret != 0 || transferred <= 0) break;
         int start = (attempts == 0) ? 1 : 0;
-        for (int i = start; i < ret && total < resp_size - 1; i++) {
+        for (int i = start; i < transferred && total < resp_size - 1; i++) {
             if (chunk[i] == '@') continue;
-            resp_buf[total++] = chunk[i];
+            resp_buf[total++] = (char)chunk[i];
         }
         attempts++;
     }
@@ -253,22 +239,18 @@ static int init_mqtt(const config_t *cfg, char *avail_topic, size_t avail_size) 
     return rc;
 }
 
-static struct usb_dev_handle* init_usb(int vendor, int product, int usb_timeout) {
-    struct usb_device *dev = NULL;
-    char buf[1000];
+static libusb_device_handle* init_usb(int vendor, int product, int usb_timeout) {
     int ret;
 
     LOG_DEBUG("Init USB");
-    usb_init();
+    libusb_init(NULL);
 
+    libusb_device_handle *handle = NULL;
     int counter = 0;
     do {
-        usb_set_debug(0);
-        usb_find_busses();
-        usb_find_devices();
-        dev = find_device(vendor, product);
+        handle = libusb_open_device_with_vid_pid(NULL, (uint16_t)vendor, (uint16_t)product);
 
-        if (dev != NULL) break;
+        if (handle) break;
 
         LOG_DEBUG("No device found, wait 10sec...");
         sleep(11);
@@ -278,27 +260,23 @@ static struct usb_dev_handle* init_usb(int vendor, int product, int usb_timeout)
             LOG_ERROR("Device not found");
             MQTTClient_disconnect(client, 10000);
             MQTTClient_destroy(&client);
+            libusb_exit(NULL);
             exit(1);
         }
     } while (1);
 
     LOG_DEBUG("USB device found");
 
-    struct usb_dev_handle *handle = usb_open(dev);
-    if (!handle) {
-        LOG_ERROR("Failed to open USB device");
-        MQTTClient_disconnect(client, 10000);
-        MQTTClient_destroy(&client);
-        exit(1);
+    libusb_device *usb_dev = libusb_get_device(handle);
+    struct libusb_device_descriptor desc;
+    libusb_get_device_descriptor(usb_dev, &desc);
+    if (desc.iManufacturer) {
+        libusb_get_string_descriptor_ascii(handle, desc.iManufacturer,
+                                           (unsigned char*)device_manufacturer, sizeof(device_manufacturer));
     }
-
-    if (dev->descriptor.iManufacturer) {
-        usb_get_string_simple(handle, dev->descriptor.iManufacturer,
-                              device_manufacturer, sizeof(device_manufacturer));
-    }
-    if (dev->descriptor.iProduct) {
-        usb_get_string_simple(handle, dev->descriptor.iProduct,
-                              device_product, sizeof(device_product));
+    if (desc.iProduct) {
+        libusb_get_string_descriptor_ascii(handle, desc.iProduct,
+                                           (unsigned char*)device_product, sizeof(device_product));
     }
 
     if (device_manufacturer[0])
@@ -309,30 +287,33 @@ static struct usb_dev_handle* init_usb(int vendor, int product, int usb_timeout)
     signal(SIGTERM, release_usb_device);
     signal(SIGINT,  release_usb_device);
 
-    ret = usb_get_driver_np(handle, 0, buf, sizeof(buf));
-    if (ret == 0) {
-        usb_detach_kernel_driver_np(handle, 0);
+    if (libusb_kernel_driver_active(handle, 0) == 1) {
+        libusb_detach_kernel_driver(handle, 0);
     }
 
-    ret = usb_claim_interface(handle, 0);
+    ret = libusb_claim_interface(handle, 0);
     if (ret != 0) {
         LOG_ERROR("Claim failed with error: %d", ret);
-        usb_close(handle);
+        libusb_close(handle);
         MQTTClient_disconnect(client, 10000);
         MQTTClient_destroy(&client);
+        libusb_exit(NULL);
         exit(1);
     }
 
     /* Flush any pending data */
-    usb_interrupt_read(handle, 0x00000081, buf, 16, usb_timeout);
+    unsigned char flush_buf[16];
+    int flush_transferred;
+    libusb_interrupt_transfer(handle, 0x81, flush_buf, 16, &flush_transferred, usb_timeout);
 
     return handle;
 }
 
-static void query_device_info(struct usb_dev_handle *handle, int usb_timeout,
+static void query_device_info(libusb_device_handle *handle, int usb_timeout,
                               device_flags_t *flags, int *flags_valid,
                               device_knobs_t *knobs, int *knobs_valid) {
-    char buf[1000];
+    unsigned char flush_buf[16];
+    int flush_transferred;
 
     /* *IDN? query */
     char idn_response[256];
@@ -359,7 +340,7 @@ static void query_device_info(struct usb_dev_handle *handle, int usb_timeout,
     } else {
         LOG_DEBUG("*IDN? query failed, continuing without device info");
     }
-    usb_interrupt_read(handle, 0x00000081, buf, 16, usb_timeout);
+    libusb_interrupt_transfer(handle, 0x81, flush_buf, 16, &flush_transferred, usb_timeout);
 
     /* FLAGGET? query */
     memset(flags, 0, sizeof(*flags));
@@ -378,7 +359,7 @@ static void query_device_info(struct usb_dev_handle *handle, int usb_timeout,
         } else {
             LOG_DEBUG("FLAGGET? query failed");
         }
-        usb_interrupt_read(handle, 0x00000081, buf, 16, usb_timeout);
+        libusb_interrupt_transfer(handle, 0x81, flush_buf, 16, &flush_transferred, usb_timeout);
     }
 
     /* KNOBPRE? query */
@@ -394,7 +375,7 @@ static void query_device_info(struct usb_dev_handle *handle, int usb_timeout,
         } else {
             LOG_DEBUG("KNOBPRE? query failed or no data");
         }
-        usb_interrupt_read(handle, 0x00000081, buf, 16, usb_timeout);
+        libusb_interrupt_transfer(handle, 0x81, flush_buf, 16, &flush_transferred, usb_timeout);
     }
 }
 
@@ -428,13 +409,12 @@ int main(int argc, char *argv[])
                       &dev_flags, &flags_valid, &dev_knobs, &knobs_valid);
 
     int ret;
-    char buf[1000];
+    int transferred;
     MQTTClient_message pubmsg = MQTTClient_message_initializer;
     MQTTClient_deliveryToken token;
     int rc;
     int vendor = 0x03eb;
     int product = 0x2013;
-    struct usb_device *dev = NULL;
     unsigned short iresult = 0;
     unsigned short voc = 0;
     unsigned short rh_raw = 0;
@@ -574,48 +554,42 @@ int main(int argc, char *argv[])
         char poll_cmd[16];
         build_poll_command(poll_seq, poll_cmd);
         poll_seq = next_poll_seq(poll_seq);
-        ret = usb_interrupt_write(devh, 0x00000002, poll_cmd, 16, cfg.usb_timeout);
+        ret = libusb_interrupt_transfer(devh, 0x02, (unsigned char*)poll_cmd, 16, &transferred, cfg.usb_timeout);
 
-        LOG_DEBUG("Return code from USB write: %d", ret);
+        LOG_DEBUG("Return code from USB write: %d (transferred: %d)", ret, transferred);
 
-        if (ret != 16) {
+        if (ret != 0 || transferred != 16) {
             fail_count++;
             LOG_DEBUG("Write failed, fail_count: %d", fail_count);
             if (fail_count >= cfg.max_retries) {
                 LOG_ERROR("Max retries reached, reconnecting USB");
-                usb_release_interface(devh, 0);
-                usb_close(devh);
+                libusb_release_interface(devh, 0);
+                libusb_close(devh);
                 fail_count = 0;
                 // Re-open device
-                usb_find_busses();
-                usb_find_devices();
-                dev = find_device(vendor, product);
-                if (!dev) {
+                devh = libusb_open_device_with_vid_pid(NULL, (uint16_t)vendor, (uint16_t)product);
+                if (!devh) {
                     LOG_ERROR("Device not found on reconnect");
                     MQTTClient_disconnect(client, 10000);
                     MQTTClient_destroy(&client);
+                    libusb_exit(NULL);
                     exit(1);
                 }
-                devh = usb_open(dev);
-                if (!devh) {
-                    LOG_ERROR("Failed to reopen USB device");
-                    MQTTClient_disconnect(client, 10000);
-                    MQTTClient_destroy(&client);
-                    exit(1);
-                }
-                ret = usb_get_driver_np(devh, 0, buf, sizeof(buf));
-                if (ret == 0)
-                    usb_detach_kernel_driver_np(devh, 0);
-                ret = usb_claim_interface(devh, 0);
+                if (libusb_kernel_driver_active(devh, 0) == 1)
+                    libusb_detach_kernel_driver(devh, 0);
+                ret = libusb_claim_interface(devh, 0);
                 if (ret != 0) {
                     LOG_ERROR("Claim failed on reconnect: %d", ret);
-                    usb_close(devh);
+                    libusb_close(devh);
                     MQTTClient_disconnect(client, 10000);
                     MQTTClient_destroy(&client);
+                    libusb_exit(NULL);
                     exit(1);
                 }
                 LOG_INFO("USB reconnect successful");
-                usb_interrupt_read(devh, 0x00000081, buf, 16, cfg.usb_timeout);
+                unsigned char flush_buf[16];
+                int flush_transferred;
+                libusb_interrupt_transfer(devh, 0x81, flush_buf, 16, &flush_transferred, cfg.usb_timeout);
             }
             sleep(cfg.poll_interval);
             continue;
@@ -626,25 +600,27 @@ int main(int argc, char *argv[])
         unsigned char fullbuf[48];
         memset(fullbuf, 0, 48);
 
-        ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 16, cfg.usb_timeout);
-        LOG_DEBUG("Return code from USB read 1: %d", ret);
+        ret = libusb_interrupt_transfer(devh, 0x81, fullbuf, 16, &transferred, cfg.usb_timeout);
+        LOG_DEBUG("Return code from USB read 1: %d (transferred: %d)", ret, transferred);
 
-        if (ret == 0) {
+        if (ret == 0 && transferred == 0) {
             sleep(1);
-            ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 16, cfg.usb_timeout);
-            LOG_DEBUG("Return code from USB read 1 (retry): %d", ret);
+            ret = libusb_interrupt_transfer(devh, 0x81, fullbuf, 16, &transferred, cfg.usb_timeout);
+            LOG_DEBUG("Return code from USB read 1 (retry): %d (transferred: %d)", ret, transferred);
         }
 
-        if (ret == 16) {
-            int ret2 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 16, 16, cfg.usb_timeout);
-            LOG_DEBUG("Return code from USB read 2: %d", ret2);
-            if (ret2 == 16) {
-                int ret3 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 32, 16, cfg.usb_timeout);
-                LOG_DEBUG("Return code from USB read 3: %d", ret3);
+        if (ret == 0 && transferred == 16) {
+            int trans2;
+            int ret2 = libusb_interrupt_transfer(devh, 0x81, fullbuf + 16, 16, &trans2, cfg.usb_timeout);
+            LOG_DEBUG("Return code from USB read 2: %d (transferred: %d)", ret2, trans2);
+            if (ret2 == 0 && trans2 == 16) {
+                int trans3;
+                int ret3 = libusb_interrupt_transfer(devh, 0x81, fullbuf + 32, 16, &trans3, cfg.usb_timeout);
+                LOG_DEBUG("Return code from USB read 3: %d (transferred: %d)", ret3, trans3);
             }
         }
 
-        if ( !((ret == 0) || (ret == 16)))
+        if (ret != 0)
         {
             fail_count++;
             LOG_DEBUG("Read failed, fail_count: %d", fail_count);
@@ -685,9 +661,13 @@ int main(int argc, char *argv[])
 
         LOG_DEBUG("Read USB [flush]");
 
-        ret = usb_interrupt_read(devh, 0x00000081, buf, 16, cfg.usb_timeout);
+        {
+            unsigned char flush_buf[16];
+            int flush_transferred;
+            ret = libusb_interrupt_transfer(devh, 0x81, flush_buf, 16, &flush_transferred, cfg.usb_timeout);
+        }
 
-        LOG_DEBUG("Return code from USB read: %d", ret);
+        LOG_DEBUG("Return code from USB flush read: %d", ret);
 
         if ( voc >= 450 && voc <= 15001) {
             if (cfg.print_voc_only == 1) {
@@ -731,8 +711,9 @@ int main(int argc, char *argv[])
 
     }
 
-    usb_release_interface(devh, 0);
-    usb_close(devh);
+    libusb_release_interface(devh, 0);
+    libusb_close(devh);
+    libusb_exit(NULL);
     {
         MQTTClient_message off_msg = MQTTClient_message_initializer;
         MQTTClient_deliveryToken off_tk;

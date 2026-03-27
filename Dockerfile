@@ -7,11 +7,11 @@ RUN apt-get update \
   && apt-get install -qqy --no-install-recommends apt-utils ca-certificates \
   apt-transport-https \
 #  build-essential gcc make cmake cmake-gui cmake-curses-gui \
-  libusb-dev libpaho-mqtt-dev
+  libusb-1.0-0-dev libpaho-mqtt-dev
 
-COPY airsensor.c /airsensor.c
+COPY airsensor.c airsensor.h /
 # for ssl support -lpaho-mqtt3cs, without -lpaho-mqtt3c
-RUN gcc -static -o airsensor airsensor.c -lusb -lpaho-mqtt3c -lpthread
+RUN gcc -static -o airsensor airsensor.c -lusb-1.0 -lpaho-mqtt3c -lpthread
 
 FROM scratch
 COPY --from=builder /airsensor /airsensor
