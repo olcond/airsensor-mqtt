@@ -212,30 +212,22 @@ static void publish_discovery(MQTTClient client_handle,
     MQTTClient_waitForCompletion(client_handle, disc_token, TIMEOUT);
 }
 
-int main(int argc, char *argv[])
-{
-    config_t cfg;
-    config_init_from_env(&cfg);
+static int init_mqtt(const config_t *cfg, char *avail_topic, size_t avail_size) {
     char address[256];
-    snprintf(address, sizeof(address), "tcp://%s:%s", cfg.broker, cfg.port);
+    snprintf(address, sizeof(address), "tcp://%s:%s", cfg->broker, cfg->port);
+
+    snprintf(avail_topic, avail_size, "%s/availability", cfg->topic);
+    snprintf(g_avail_topic, sizeof(g_avail_topic), "%s", avail_topic);
+
+    MQTTClient_create(&client, address, cfg->clientid,
+        MQTTCLIENT_PERSISTENCE_NONE, NULL);
 
     MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
     MQTTClient_willOptions will_opts = MQTTClient_willOptions_initializer;
-    MQTTClient_message pubmsg = MQTTClient_message_initializer;
-    MQTTClient_deliveryToken token;
-    int rc;
-
-    char avail_topic[256];
-    snprintf(avail_topic, sizeof(avail_topic), "%s/availability", cfg.topic);
-    snprintf(g_avail_topic, sizeof(g_avail_topic), "%s", avail_topic);
-    int expire_after = cfg.poll_interval * 3;
-
-    MQTTClient_create(&client, address, cfg.clientid,
-        MQTTCLIENT_PERSISTENCE_NONE, NULL);
     conn_opts.keepAliveInterval = 70;
     conn_opts.cleansession = 1;
-    conn_opts.username = cfg.mqtt_username;
-    conn_opts.password = cfg.mqtt_password;
+    conn_opts.username = cfg->mqtt_username;
+    conn_opts.password = cfg->mqtt_password;
 
     will_opts.topicName = avail_topic;
     will_opts.message = "offline";
@@ -243,13 +235,14 @@ int main(int argc, char *argv[])
     will_opts.retained = 1;
     conn_opts.will = &will_opts;
 
-    if ((rc = MQTTClient_connect(client, &conn_opts)) != MQTTCLIENT_SUCCESS)
-    {
+    int rc = MQTTClient_connect(client, &conn_opts);
+    if (rc != MQTTCLIENT_SUCCESS) {
         LOG_ERROR("Failed to connect, return code %d", rc);
         exit(EXIT_FAILURE);
     }
 
-    // Publish online availability (retained)
+    MQTTClient_message pubmsg = MQTTClient_message_initializer;
+    MQTTClient_deliveryToken token;
     pubmsg.payload = "online";
     pubmsg.payloadlen = 6;
     pubmsg.qos = QOS;
@@ -257,186 +250,195 @@ int main(int argc, char *argv[])
     MQTTClient_publishMessage(client, avail_topic, &pubmsg, &token);
     MQTTClient_waitForCompletion(client, token, TIMEOUT);
 
-	int ret, vendor, product, counter;
-	struct usb_device *dev;
-	char buf[1000];
+    return rc;
+}
 
-	vendor = 0x03eb;
-	product = 0x2013;
-	dev = NULL;
+static struct usb_dev_handle* init_usb(int vendor, int product, int usb_timeout) {
+    struct usb_device *dev = NULL;
+    char buf[1000];
+    int ret;
 
-	int opt;
-	while ((opt = getopt(argc, argv, "dvoh")) != -1) {
-		switch (opt) {
-			case 'd': log_level = LOG_LEVEL_DEBUG; break;
-			case 'v': cfg.print_voc_only = 1; break;
-			case 'o': cfg.one_read = 1; break;
-			case 'h': /* fallthrough */
-			default:  help();
-		}
-	}
+    LOG_DEBUG("Init USB");
+    usb_init();
 
-	LOG_DEBUG("Init USB");
+    int counter = 0;
+    do {
+        usb_set_debug(0);
+        usb_find_busses();
+        usb_find_devices();
+        dev = find_device(vendor, product);
 
-	usb_init();
+        if (dev != NULL) break;
 
-	counter = 0;
+        LOG_DEBUG("No device found, wait 10sec...");
+        sleep(11);
+        ++counter;
 
-	do {
+        if (counter == 10) {
+            LOG_ERROR("Device not found");
+            MQTTClient_disconnect(client, 10000);
+            MQTTClient_destroy(&client);
+            exit(1);
+        }
+    } while (1);
 
-		usb_set_debug(0);
-		usb_find_busses();
-		usb_find_devices();
-		dev = find_device(vendor, product);
+    LOG_DEBUG("USB device found");
 
-		if (dev != NULL)
-			break;
+    struct usb_dev_handle *handle = usb_open(dev);
+    if (!handle) {
+        LOG_ERROR("Failed to open USB device");
+        MQTTClient_disconnect(client, 10000);
+        MQTTClient_destroy(&client);
+        exit(1);
+    }
 
-		LOG_DEBUG("No device found, wait 10sec...");
+    if (dev->descriptor.iManufacturer) {
+        usb_get_string_simple(handle, dev->descriptor.iManufacturer,
+                              device_manufacturer, sizeof(device_manufacturer));
+    }
+    if (dev->descriptor.iProduct) {
+        usb_get_string_simple(handle, dev->descriptor.iProduct,
+                              device_product, sizeof(device_product));
+    }
 
-		sleep(11);
-		++counter;
+    if (device_manufacturer[0])
+        LOG_DEBUG("Manufacturer: %s", device_manufacturer);
+    if (device_product[0])
+        LOG_DEBUG("Product: %s", device_product);
 
-		if (counter == 10) {
-			LOG_ERROR("Device not found");
-			MQTTClient_disconnect(client, 10000);
-			MQTTClient_destroy(&client);
-			exit(1);
-		}
+    signal(SIGTERM, release_usb_device);
+    signal(SIGINT,  release_usb_device);
 
-	}  while (1);
+    ret = usb_get_driver_np(handle, 0, buf, sizeof(buf));
+    if (ret == 0) {
+        usb_detach_kernel_driver_np(handle, 0);
+    }
 
-	assert(dev);
+    ret = usb_claim_interface(handle, 0);
+    if (ret != 0) {
+        LOG_ERROR("Claim failed with error: %d", ret);
+        usb_close(handle);
+        MQTTClient_disconnect(client, 10000);
+        MQTTClient_destroy(&client);
+        exit(1);
+    }
 
-	LOG_DEBUG("USB device found");
+    /* Flush any pending data */
+    usb_interrupt_read(handle, 0x00000081, buf, 16, usb_timeout);
 
-	devh = usb_open(dev);
-	if (!devh) {
-		LOG_ERROR("Failed to open USB device");
-		MQTTClient_disconnect(client, 10000);
-		MQTTClient_destroy(&client);
-		exit(1);
-	}
+    return handle;
+}
 
-	if (dev->descriptor.iManufacturer) {
-		usb_get_string_simple(devh, dev->descriptor.iManufacturer,
-		                      device_manufacturer, sizeof(device_manufacturer));
-	}
-	if (dev->descriptor.iProduct) {
-		usb_get_string_simple(devh, dev->descriptor.iProduct,
-		                      device_product, sizeof(device_product));
-	}
+static void query_device_info(struct usb_dev_handle *handle, int usb_timeout,
+                              device_flags_t *flags, int *flags_valid,
+                              device_knobs_t *knobs, int *knobs_valid) {
+    char buf[1000];
 
-	if (device_manufacturer[0])
-		LOG_DEBUG("Manufacturer: %s", device_manufacturer);
-	if (device_product[0])
-		LOG_DEBUG("Product: %s", device_product);
+    /* *IDN? query */
+    char idn_response[256];
+    if (query_device_id(handle, idn_response, sizeof(idn_response), usb_timeout) == 0) {
+        parse_serial_from_idn_response(idn_response, device_serial, sizeof(device_serial));
+        parse_firmware_from_idn_response(idn_response, device_firmware, sizeof(device_firmware));
 
-	signal(SIGTERM, release_usb_device);
-	signal(SIGINT,  release_usb_device);
+        if (device_serial[0] == '\0') {
+            size_t dest_idx = 0, j = 0;
+            while (idn_response[j] && dest_idx < sizeof(device_serial) - 1) {
+                char c = idn_response[j];
+                if (!is_idn_delim(c))
+                    device_serial[dest_idx++] = c;
+                j++;
+            }
+            device_serial[dest_idx] = '\0';
+        }
+        if (device_serial[0])
+            printf("Device serial: %s\n", device_serial);
+        if (device_firmware[0] == '\0')
+            snprintf(device_firmware, sizeof(device_firmware), "1.12p5 $Revision: 346");
+        printf("Device firmware: %s\n", device_firmware);
+        LOG_DEBUG("*IDN? query successful");
+    } else {
+        LOG_DEBUG("*IDN? query failed, continuing without device info");
+    }
+    usb_interrupt_read(handle, 0x00000081, buf, 16, usb_timeout);
 
-	ret = usb_get_driver_np(devh, 0, buf, sizeof(buf));
-	if (ret == 0) {
-		ret = usb_detach_kernel_driver_np(devh, 0);
-	}
-
-	ret = usb_claim_interface(devh, 0);
-	if (ret != 0) {
-		LOG_ERROR("Claim failed with error: %d", ret);
-		usb_close(devh);
-		MQTTClient_disconnect(client, 10000);
-		MQTTClient_destroy(&client);
-		exit(1);
-	}
-
-	unsigned short iresult=0;
-	unsigned short voc=0;
-	unsigned short rh_raw = 0;
-	unsigned int r_s = 0;
-
-	LOG_DEBUG("Read any remaining data from USB");
-
-	ret = usb_interrupt_read(devh, 0x00000081, buf, 16, cfg.usb_timeout);
-
-	LOG_DEBUG("Return code from USB read: %d", ret);
-
-	/* Query device identification (*IDN?) for serial and firmware */
-	{
-		char idn_response[256];
-		if (query_device_id(devh, idn_response, sizeof(idn_response), cfg.usb_timeout) == 0) {
-
-			parse_serial_from_idn_response(idn_response,
-			                               device_serial,
-			                               sizeof(device_serial));
-			parse_firmware_from_idn_response(idn_response,
-			                                 device_firmware,
-			                                 sizeof(device_firmware));
-
-			// Robust fallback if serial was not found via S/N: marker
-			if (device_serial[0] == '\0') {
-				size_t dest_idx = 0;
-				size_t j = 0;
-				while (idn_response[j] && dest_idx < sizeof(device_serial) - 1) {
-					char c = idn_response[j];
-					if (!is_idn_delim(c)) {
-						device_serial[dest_idx++] = c;
-					}
-					j++;
-				}
-				device_serial[dest_idx] = '\0';
-			}
-			if (device_serial[0])
-				printf("Device serial: %s\n", device_serial);
-			if (device_firmware[0] == '\0')
-				snprintf(device_firmware, sizeof(device_firmware),
-				         "1.12p5 $Revision: 346");
-			printf("Device firmware: %s\n", device_firmware);
-			LOG_DEBUG("*IDN? query successful");
-		} else {
-			LOG_DEBUG("*IDN? query failed, continuing without device info");
-		}
-		/* Flush any remaining data */
-		usb_interrupt_read(devh, 0x00000081, buf, 16, cfg.usb_timeout);
-	}
-
-    /* Query device flags (FLAGGET?) for warmup/burn-in status */
-    device_flags_t dev_flags = {0};
-    int flags_valid = 0;
+    /* FLAGGET? query */
+    memset(flags, 0, sizeof(*flags));
+    *flags_valid = 0;
     {
         unsigned char flag_resp[48];
-        int flag_len = query_device_data(devh, "FLAGGET?", flag_resp, 3, cfg.usb_timeout);
-        if (flag_len > 0 && parse_flags_response(flag_resp, (size_t)flag_len, &dev_flags) == 0) {
-            flags_valid = 1;
-            if (dev_flags.warmup > 0)
-                printf("Warmup: %d min remaining\n", dev_flags.warmup);
-            if (dev_flags.burn_in > 0)
-                printf("Burn-in: %d min remaining\n", dev_flags.burn_in);
-            LOG_DEBUG("FLAGGET? query successful");
-            LOG_DEBUG("Warmup: %d", dev_flags.warmup);
-            LOG_DEBUG("Burn-in: %d", dev_flags.burn_in);
-            LOG_DEBUG("Logging: %d", dev_flags.logging);
+        int flag_len = query_device_data(handle, "FLAGGET?", flag_resp, 3, usb_timeout);
+        if (flag_len > 0 && parse_flags_response(flag_resp, (size_t)flag_len, flags) == 0) {
+            *flags_valid = 1;
+            if (flags->warmup > 0)
+                printf("Warmup: %d min remaining\n", flags->warmup);
+            if (flags->burn_in > 0)
+                printf("Burn-in: %d min remaining\n", flags->burn_in);
+            LOG_DEBUG("FLAGGET? successful — warmup=%d, burn_in=%d, logging=%d",
+                      flags->warmup, flags->burn_in, flags->logging);
         } else {
             LOG_DEBUG("FLAGGET? query failed");
         }
-        usb_interrupt_read(devh, 0x00000081, buf, 16, cfg.usb_timeout);
+        usb_interrupt_read(handle, 0x00000081, buf, 16, usb_timeout);
     }
 
-    /* Query device knobs (KNOBPRE?) for warn thresholds */
-    device_knobs_t dev_knobs = {0};
-    int knobs_valid = 0;
+    /* KNOBPRE? query */
+    memset(knobs, 0, sizeof(*knobs));
+    *knobs_valid = 0;
     {
         unsigned char knob_resp[256];
-        int knob_len = query_device_data(devh, "KNOBPRE?", knob_resp, 16, cfg.usb_timeout);
-        if (knob_len > 0 && parse_knobs_response(knob_resp, (size_t)knob_len, &dev_knobs) == 0) {
-            knobs_valid = 1;
-            LOG_DEBUG("KNOBPRE? query successful");
-            LOG_DEBUG("warn1 threshold: %d", dev_knobs.warn1);
-            LOG_DEBUG("warn2 threshold: %d", dev_knobs.warn2);
+        int knob_len = query_device_data(handle, "KNOBPRE?", knob_resp, 16, usb_timeout);
+        if (knob_len > 0 && parse_knobs_response(knob_resp, (size_t)knob_len, knobs) == 0) {
+            *knobs_valid = 1;
+            LOG_DEBUG("KNOBPRE? successful — warn1=%d, warn2=%d",
+                      knobs->warn1, knobs->warn2);
         } else {
             LOG_DEBUG("KNOBPRE? query failed or no data");
         }
-        usb_interrupt_read(devh, 0x00000081, buf, 16, cfg.usb_timeout);
+        usb_interrupt_read(handle, 0x00000081, buf, 16, usb_timeout);
     }
+}
+
+int main(int argc, char *argv[])
+{
+    config_t cfg;
+    config_init_from_env(&cfg);
+
+    int opt;
+    while ((opt = getopt(argc, argv, "dvoh")) != -1) {
+        switch (opt) {
+            case 'd': log_level = LOG_LEVEL_DEBUG; break;
+            case 'v': cfg.print_voc_only = 1; break;
+            case 'o': cfg.one_read = 1; break;
+            case 'h': /* fallthrough */
+            default:  help();
+        }
+    }
+
+    char avail_topic[256];
+    init_mqtt(&cfg, avail_topic, sizeof(avail_topic));
+    int expire_after = cfg.poll_interval * 3;
+
+    devh = init_usb(0x03eb, 0x2013, cfg.usb_timeout);
+
+    device_flags_t dev_flags;
+    int flags_valid;
+    device_knobs_t dev_knobs;
+    int knobs_valid;
+    query_device_info(devh, cfg.usb_timeout,
+                      &dev_flags, &flags_valid, &dev_knobs, &knobs_valid);
+
+    int ret;
+    char buf[1000];
+    MQTTClient_message pubmsg = MQTTClient_message_initializer;
+    MQTTClient_deliveryToken token;
+    int rc;
+    int vendor = 0x03eb;
+    int product = 0x2013;
+    struct usb_device *dev = NULL;
+    unsigned short iresult = 0;
+    unsigned short voc = 0;
+    unsigned short rh_raw = 0;
+    unsigned int r_s = 0;
 
     // Publish Home Assistant MQTT auto-discovery configuration
     const char *origin_block =
