@@ -44,6 +44,7 @@ char device_firmware[20] = "";
 char device_manufacturer[64] = "";
 char device_product[64] = "";
 char g_avail_topic[256] = "";
+static volatile sig_atomic_t shutdown_requested = 0;
 
 /*
  * Parse an integer from a string with default and clamping.
@@ -101,23 +102,8 @@ void printout(char *str, int value) {
 }
 
 void release_usb_device(int dummy) {
-	int ret;
-	(void)dummy;
-	ret = usb_release_interface(devh, 0);
-	usb_close(devh);
-	if (g_avail_topic[0]) {
-		MQTTClient_message msg = MQTTClient_message_initializer;
-		MQTTClient_deliveryToken tk;
-		msg.payload = "offline";
-		msg.payloadlen = 7;
-		msg.qos = QOS;
-		msg.retained = 1;
-		MQTTClient_publishMessage(client, g_avail_topic, &msg, &tk);
-		MQTTClient_waitForCompletion(client, tk, TIMEOUT);
-	}
-    MQTTClient_disconnect(client, 10000);
-    MQTTClient_destroy(&client);
-	exit(ret);
+    (void)dummy;
+    shutdown_requested = 1;
 }
 
 struct usb_device* find_device(int vendor, int product) {
@@ -797,6 +783,9 @@ int main(int argc, char *argv[])
 	rc = MQTTCLIENT_SUCCESS;
 	while(rc==MQTTCLIENT_SUCCESS) {
 
+		if (shutdown_requested)
+			break;
+
 		time_t t = time(NULL);
 		struct tm tm;
 		localtime_r(&t, &tm);
@@ -969,6 +958,9 @@ int main(int argc, char *argv[])
 			break;
 
 		sleep(poll_interval);
+
+		if (shutdown_requested)
+			break;
 
 	}
 
