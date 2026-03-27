@@ -794,6 +794,7 @@ int main(int argc, char *argv[])
 
 	int fail_count = 0;
 
+	rc = MQTTCLIENT_SUCCESS;
 	while(rc==MQTTCLIENT_SUCCESS) {
 
 		time_t t = time(NULL);
