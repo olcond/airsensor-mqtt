@@ -37,6 +37,8 @@
 #define QOS         1
 #define TIMEOUT     10000L
 
+int log_level = LOG_LEVEL_INFO;
+
 MQTTClient client;
 struct usb_dev_handle *devh;
 char device_serial[20] = "";
@@ -62,20 +64,6 @@ void help() {
 	printf("-h = Help, this printout\n");
 	exit(0);
 
-}
-
-void printout(char *str, int value) {
-
-	time_t t = time(NULL);
-	struct tm tm;
-	localtime_r(&t, &tm);
-
-	printf("%04d-%02d-%02d %02d:%02d:%02d, ", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
-	if (value == 0) {
-		printf("%s\n", str);
-	} else {
-		printf("%s %d\n", str, value);
-	}
 }
 
 void release_usb_device(int dummy) {
@@ -198,7 +186,7 @@ int main(int argc, char *argv[])
 
     if ((rc = MQTTClient_connect(client, &conn_opts)) != MQTTCLIENT_SUCCESS)
     {
-        printf("Failed to connect, return code %d\n", rc);
+        LOG_ERROR("Failed to connect, return code %d", rc);
         exit(EXIT_FAILURE);
     }
 
@@ -210,12 +198,11 @@ int main(int argc, char *argv[])
     MQTTClient_publishMessage(client, avail_topic, &pubmsg, &token);
     MQTTClient_waitForCompletion(client, token, TIMEOUT);
 
-	int ret, vendor, product, debug, counter, one_read;
+	int ret, vendor, product, counter, one_read;
 	int print_voc_only;
 	struct usb_device *dev;
 	char buf[1000];
 
-	debug = 0;
 	print_voc_only = 0;
 	one_read = 0;
 
@@ -228,7 +215,7 @@ int main(int argc, char *argv[])
 		switch (argv[1][1])
 		{
 			case 'd':
-				debug = 1;
+				log_level = LOG_LEVEL_DEBUG;
 				break;
 
 			case 'v':
@@ -248,13 +235,7 @@ int main(int argc, char *argv[])
 		--argc;
 	}
 
-	if (debug == 1) {
-		printout("DEBUG: Active", 0);
-	}
-
-	if (debug == 1) {
-		printout("DEBUG: Init USB", 0);
-	}
+	LOG_DEBUG("Init USB");
 
 	usb_init();
 
@@ -270,14 +251,13 @@ int main(int argc, char *argv[])
 		if (dev != NULL)
 			break;
 
-		if (debug == 1)
-			printout("DEBUG: No device found, wait 10sec...", 0);
+		LOG_DEBUG("No device found, wait 10sec...");
 
 		sleep(11);
 		++counter;
 
 		if (counter == 10) {
-			printout("Error: Device not found", 0);
+			LOG_ERROR("Device not found");
 			MQTTClient_disconnect(client, 10000);
 			MQTTClient_destroy(&client);
 			exit(1);
@@ -287,12 +267,11 @@ int main(int argc, char *argv[])
 
 	assert(dev);
 
-	if (debug == 1)
-		printout("DEBUG: USB device found", 0);
+	LOG_DEBUG("USB device found");
 
 	devh = usb_open(dev);
 	if (!devh) {
-		printout("Error: Failed to open USB device", 0);
+		LOG_ERROR("Failed to open USB device");
 		MQTTClient_disconnect(client, 10000);
 		MQTTClient_destroy(&client);
 		exit(1);
@@ -307,12 +286,10 @@ int main(int argc, char *argv[])
 		                      device_product, sizeof(device_product));
 	}
 
-	if (debug == 1) {
-		if (device_manufacturer[0])
-			printf("Manufacturer: %s\n", device_manufacturer);
-		if (device_product[0])
-			printf("Product: %s\n", device_product);
-	}
+	if (device_manufacturer[0])
+		LOG_DEBUG("Manufacturer: %s", device_manufacturer);
+	if (device_product[0])
+		LOG_DEBUG("Product: %s", device_product);
 
 	signal(SIGTERM, release_usb_device);
 	signal(SIGINT,  release_usb_device);
@@ -324,7 +301,7 @@ int main(int argc, char *argv[])
 
 	ret = usb_claim_interface(devh, 0);
 	if (ret != 0) {
-		printout("Error: claim failed with error: ", ret);
+		LOG_ERROR("Claim failed with error: %d", ret);
 		usb_close(devh);
 		MQTTClient_disconnect(client, 10000);
 		MQTTClient_destroy(&client);
@@ -336,13 +313,11 @@ int main(int argc, char *argv[])
 	unsigned short rh_raw = 0;
 	unsigned int r_s = 0;
 
-	if (debug == 1)
-		printout("DEBUG: Read any remaining data from USB", 0);
+	LOG_DEBUG("Read any remaining data from USB");
 
 	ret = usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
 
-	if (debug == 1)
-		printout("DEBUG: Return code from USB read: ", ret);
+	LOG_DEBUG("Return code from USB read: %d", ret);
 
 	/* Query device identification (*IDN?) for serial and firmware */
 	{
@@ -375,12 +350,9 @@ int main(int argc, char *argv[])
 				snprintf(device_firmware, sizeof(device_firmware),
 				         "1.12p5 $Revision: 346");
 			printf("Device firmware: %s\n", device_firmware);
-			if (debug == 1) {
-				printout("DEBUG: *IDN? query successful", 0);
-			}
+			LOG_DEBUG("*IDN? query successful");
 		} else {
-			if (debug == 1)
-				printout("DEBUG: *IDN? query failed, continuing without device info", 0);
+			LOG_DEBUG("*IDN? query failed, continuing without device info");
 		}
 		/* Flush any remaining data */
 		usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
@@ -398,15 +370,12 @@ int main(int argc, char *argv[])
                 printf("Warmup: %d min remaining\n", dev_flags.warmup);
             if (dev_flags.burn_in > 0)
                 printf("Burn-in: %d min remaining\n", dev_flags.burn_in);
-            if (debug == 1) {
-                printout("DEBUG: FLAGGET? query successful", 0);
-                printout("DEBUG: Warmup: ", dev_flags.warmup);
-                printout("DEBUG: Burn-in: ", dev_flags.burn_in);
-                printout("DEBUG: Logging: ", dev_flags.logging);
-            }
+            LOG_DEBUG("FLAGGET? query successful");
+            LOG_DEBUG("Warmup: %d", dev_flags.warmup);
+            LOG_DEBUG("Burn-in: %d", dev_flags.burn_in);
+            LOG_DEBUG("Logging: %d", dev_flags.logging);
         } else {
-            if (debug == 1)
-                printout("DEBUG: FLAGGET? query failed", 0);
+            LOG_DEBUG("FLAGGET? query failed");
         }
         usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
     }
@@ -419,14 +388,11 @@ int main(int argc, char *argv[])
         int knob_len = query_device_data(devh, "KNOBPRE?", knob_resp, 16, usb_timeout);
         if (knob_len > 0 && parse_knobs_response(knob_resp, (size_t)knob_len, &dev_knobs) == 0) {
             knobs_valid = 1;
-            if (debug == 1) {
-                printout("DEBUG: KNOBPRE? query successful", 0);
-                printout("DEBUG: warn1 threshold: ", dev_knobs.warn1);
-                printout("DEBUG: warn2 threshold: ", dev_knobs.warn2);
-            }
+            LOG_DEBUG("KNOBPRE? query successful");
+            LOG_DEBUG("warn1 threshold: %d", dev_knobs.warn1);
+            LOG_DEBUG("warn2 threshold: %d", dev_knobs.warn2);
         } else {
-            if (debug == 1)
-                printout("DEBUG: KNOBPRE? query failed or no data", 0);
+            LOG_DEBUG("KNOBPRE? query failed or no data");
         }
         usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
     }
@@ -624,8 +590,7 @@ int main(int argc, char *argv[])
         pubmsg.retained = 1;
         MQTTClient_publishMessage(client, diag_topic, &pubmsg, &token);
         MQTTClient_waitForCompletion(client, token, TIMEOUT);
-        if (debug == 1)
-            printout("DEBUG: Diagnostic data published", 0);
+        LOG_DEBUG("Diagnostic data published");
     }
 
 	int fail_count = 0;
@@ -641,23 +606,20 @@ int main(int argc, char *argv[])
 		localtime_r(&t, &tm);
 
 		// Build poll command with sequence number (FHEM protocol)
-		if (debug == 1)
-			printout("DEBUG: Write data to device", 0);
+		LOG_DEBUG("Write data to device");
 
 		char poll_cmd[16];
 		build_poll_command(poll_seq, poll_cmd);
 		poll_seq = next_poll_seq(poll_seq);
 		ret = usb_interrupt_write(devh, 0x00000002, poll_cmd, 16, usb_timeout);
 
-		if (debug == 1)
-			printout("DEBUG: Return code from USB write: ", ret);
+		LOG_DEBUG("Return code from USB write: %d", ret);
 
 		if (ret != 16) {
 			fail_count++;
-			if (debug == 1)
-				printout("DEBUG: Write failed, fail_count: ", fail_count);
+			LOG_DEBUG("Write failed, fail_count: %d", fail_count);
 			if (fail_count >= max_retries) {
-				printout("ERROR: Max retries reached, reconnecting USB", 0);
+				LOG_ERROR("Max retries reached, reconnecting USB");
 				usb_release_interface(devh, 0);
 				usb_close(devh);
 				fail_count = 0;
@@ -666,14 +628,14 @@ int main(int argc, char *argv[])
 				usb_find_devices();
 				dev = find_device(vendor, product);
 				if (!dev) {
-					printout("Error: Device not found on reconnect", 0);
+					LOG_ERROR("Device not found on reconnect");
 					MQTTClient_disconnect(client, 10000);
 					MQTTClient_destroy(&client);
 					exit(1);
 				}
 				devh = usb_open(dev);
 				if (!devh) {
-					printout("Error: Failed to reopen USB device", 0);
+					LOG_ERROR("Failed to reopen USB device");
 					MQTTClient_disconnect(client, 10000);
 					MQTTClient_destroy(&client);
 					exit(1);
@@ -683,53 +645,50 @@ int main(int argc, char *argv[])
 					usb_detach_kernel_driver_np(devh, 0);
 				ret = usb_claim_interface(devh, 0);
 				if (ret != 0) {
-					printout("Error: claim failed on reconnect: ", ret);
+					LOG_ERROR("Claim failed on reconnect: %d", ret);
 					usb_close(devh);
 					MQTTClient_disconnect(client, 10000);
 					MQTTClient_destroy(&client);
 					exit(1);
 				}
-				printout("INFO: USB reconnect successful", 0);
+				LOG_INFO("USB reconnect successful");
 				usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
 			}
 			sleep(poll_interval);
 			continue;
 		}
 
-		if (debug == 1)
-			printout("DEBUG: Read USB (Chunk 1 of 3)", 0);
+		LOG_DEBUG("Read USB (Chunk 1 of 3)");
 
 		unsigned char fullbuf[48];
 		memset(fullbuf, 0, 48);
 
 		ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 16, usb_timeout);
-		if (debug == 1)
-			printout("DEBUG: Return code from USB read 1: ", ret);
+		LOG_DEBUG("Return code from USB read 1: %d", ret);
 
 		if (ret == 0) {
 			sleep(1);
 			ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 16, usb_timeout);
-			if (debug == 1) printout("DEBUG: Return code from USB read 1 (retry): ", ret);
+			LOG_DEBUG("Return code from USB read 1 (retry): %d", ret);
 		}
 
 		if (ret == 16) {
 			int ret2 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 16, 16, usb_timeout);
-			if (debug == 1) printout("DEBUG: Return code from USB read 2: ", ret2);
+			LOG_DEBUG("Return code from USB read 2: %d", ret2);
 			if (ret2 == 16) {
 				int ret3 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 32, 16, usb_timeout);
-				if (debug == 1) printout("DEBUG: Return code from USB read 3: ", ret3);
+				LOG_DEBUG("Return code from USB read 3: %d", ret3);
 			}
 		}
 
 		if ( !((ret == 0) || (ret == 16)))
 		{
 			fail_count++;
-			if (debug == 1)
-				printout("DEBUG: Read failed, fail_count: ", fail_count);
+			LOG_DEBUG("Read failed, fail_count: %d", fail_count);
 			if (print_voc_only == 1) {
 				printf("0\n");
 			} else {
-				printout("ERROR: Invalid result code: ", ret);
+				LOG_ERROR("Invalid result code: %d", ret);
 			}
 			sleep(poll_interval);
 			continue;
@@ -756,21 +715,16 @@ int main(int argc, char *argv[])
 		    | ((unsigned int)fullbuf[13] << 8)
 		    | ((unsigned int)fullbuf[14] << 16);
 
-		if (debug == 1) {
-			printout("DEBUG: r_h raw: ", rh_raw);
-			printout("DEBUG: r_s: ", r_s);
-		}
+		LOG_DEBUG("r_h raw: %d", rh_raw);
+		LOG_DEBUG("r_s: %u", r_s);
 
 		sleep(1);
 
-		if (debug == 1) {
-			printout("DEBUG: Read USB [flush]", 0);
-		}
+		LOG_DEBUG("Read USB [flush]");
 
 		ret = usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
 
-		if (debug == 1)
-			printout("DEBUG: Return code from USB read: ", ret);
+		LOG_DEBUG("Return code from USB read: %d", ret);
 
 		if ( voc >= 450 && voc <= 15001) {
 			if (print_voc_only == 1) {

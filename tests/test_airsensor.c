@@ -17,7 +17,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define AIRSENSOR_TEST
 #include "../airsensor.h"
+
+int log_level = LOG_LEVEL_ERROR;
 
 /* --------------------------------------------------------------------------
  * Minimal test runner

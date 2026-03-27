@@ -201,4 +201,38 @@ static inline int parse_knobs_response(const unsigned char *data, size_t len, de
     return found ? 0 : -1;
 }
 
+/* --------------------------------------------------------------------------
+ * Logging macros
+ * -------------------------------------------------------------------------- */
+
+#include <time.h>
+
+#define LOG_LEVEL_ERROR 0
+#define LOG_LEVEL_INFO  1
+#define LOG_LEVEL_DEBUG 2
+
+#ifndef AIRSENSOR_TEST
+extern int log_level;
+#endif
+
+#define LOG(level, fmt, ...)                                         \
+    do {                                                             \
+        if (log_level >= (level)) {                                  \
+            time_t _t = time(NULL);                                  \
+            struct tm _tm;                                           \
+            localtime_r(&_t, &_tm);                                  \
+            const char *_label = (level) == LOG_LEVEL_ERROR ? "ERROR" \
+                               : (level) == LOG_LEVEL_INFO  ? "INFO"  \
+                               : "DEBUG";                             \
+            fprintf(stderr, "%04d-%02d-%02d %02d:%02d:%02d [%s] " fmt "\n", \
+                    _tm.tm_year + 1900, _tm.tm_mon + 1, _tm.tm_mday, \
+                    _tm.tm_hour, _tm.tm_min, _tm.tm_sec,             \
+                    _label, ##__VA_ARGS__);                          \
+        }                                                            \
+    } while (0)
+
+#define LOG_ERROR(fmt, ...) LOG(LOG_LEVEL_ERROR, fmt, ##__VA_ARGS__)
+#define LOG_INFO(fmt, ...)  LOG(LOG_LEVEL_INFO,  fmt, ##__VA_ARGS__)
+#define LOG_DEBUG(fmt, ...) LOG(LOG_LEVEL_DEBUG, fmt, ##__VA_ARGS__)
+
 #endif /* AIRSENSOR_H */
