@@ -142,23 +142,10 @@ int query_device_id(struct usb_dev_handle *handle, char *resp_buf, size_t resp_s
 
 int main(int argc, char *argv[])
 {
-    const char *brokername = getenv("MQTT_BROKERNAME");
-    if (!brokername) brokername = "127.0.0.1";
-    const char *portnumber = getenv("MQTT_PORT");
-    if (!portnumber) portnumber = "1883";
-    const char *clientid = getenv("MQTT_CLIENTID");
-    if (!clientid) clientid = "airsensor";
-    const char *topicname = getenv("MQTT_TOPIC");
-    if (!topicname) topicname = "home/CO2/voc";
-    const char *ha_prefix = getenv("HA_DISCOVERY_PREFIX");
-    if (!ha_prefix) ha_prefix = "homeassistant";
-    const char *ha_device_name = getenv("HA_DEVICE_NAME");
-    if (!ha_device_name) ha_device_name = "Air Sensor";
-    int poll_interval = parse_env_int(getenv("POLL_INTERVAL"), 30, 10, 3600);
-    int usb_timeout = parse_env_int(getenv("USB_TIMEOUT"), 1000, 250, 10000);
-    int max_retries = parse_env_int(getenv("MAX_RETRIES"), 3, 1, 20);
+    config_t cfg;
+    config_init_from_env(&cfg);
     char address[256];
-    snprintf(address, sizeof(address), "tcp://%s:%s", brokername, portnumber);
+    snprintf(address, sizeof(address), "tcp://%s:%s", cfg.broker, cfg.port);
 
     MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
     MQTTClient_willOptions will_opts = MQTTClient_willOptions_initializer;
@@ -167,16 +154,16 @@ int main(int argc, char *argv[])
     int rc;
 
     char avail_topic[256];
-    snprintf(avail_topic, sizeof(avail_topic), "%s/availability", topicname);
+    snprintf(avail_topic, sizeof(avail_topic), "%s/availability", cfg.topic);
     snprintf(g_avail_topic, sizeof(g_avail_topic), "%s", avail_topic);
-    int expire_after = poll_interval * 3;
+    int expire_after = cfg.poll_interval * 3;
 
-    MQTTClient_create(&client, address, clientid,
+    MQTTClient_create(&client, address, cfg.clientid,
         MQTTCLIENT_PERSISTENCE_NONE, NULL);
     conn_opts.keepAliveInterval = 70;
     conn_opts.cleansession = 1;
-    conn_opts.username = getenv("MQTT_USERNAME");
-    conn_opts.password = getenv("MQTT_PASSWORD");
+    conn_opts.username = cfg.mqtt_username;
+    conn_opts.password = cfg.mqtt_password;
 
     will_opts.topicName = avail_topic;
     will_opts.message = "offline";
@@ -198,13 +185,9 @@ int main(int argc, char *argv[])
     MQTTClient_publishMessage(client, avail_topic, &pubmsg, &token);
     MQTTClient_waitForCompletion(client, token, TIMEOUT);
 
-	int ret, vendor, product, counter, one_read;
-	int print_voc_only;
+	int ret, vendor, product, counter;
 	struct usb_device *dev;
 	char buf[1000];
-
-	print_voc_only = 0;
-	one_read = 0;
 
 	vendor = 0x03eb;
 	product = 0x2013;
@@ -219,11 +202,11 @@ int main(int argc, char *argv[])
 				break;
 
 			case 'v':
-				print_voc_only = 1;
+				cfg.print_voc_only = 1;
 				break;
 
 			case 'o':
-				one_read = 1;
+				cfg.one_read = 1;
 				break;
 
 			case 'h':
@@ -315,14 +298,14 @@ int main(int argc, char *argv[])
 
 	LOG_DEBUG("Read any remaining data from USB");
 
-	ret = usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
+	ret = usb_interrupt_read(devh, 0x00000081, buf, 16, cfg.usb_timeout);
 
 	LOG_DEBUG("Return code from USB read: %d", ret);
 
 	/* Query device identification (*IDN?) for serial and firmware */
 	{
 		char idn_response[256];
-		if (query_device_id(devh, idn_response, sizeof(idn_response), usb_timeout) == 0) {
+		if (query_device_id(devh, idn_response, sizeof(idn_response), cfg.usb_timeout) == 0) {
 
 			parse_serial_from_idn_response(idn_response,
 			                               device_serial,
@@ -355,7 +338,7 @@ int main(int argc, char *argv[])
 			LOG_DEBUG("*IDN? query failed, continuing without device info");
 		}
 		/* Flush any remaining data */
-		usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
+		usb_interrupt_read(devh, 0x00000081, buf, 16, cfg.usb_timeout);
 	}
 
     /* Query device flags (FLAGGET?) for warmup/burn-in status */
@@ -363,7 +346,7 @@ int main(int argc, char *argv[])
     int flags_valid = 0;
     {
         unsigned char flag_resp[48];
-        int flag_len = query_device_data(devh, "FLAGGET?", flag_resp, 3, usb_timeout);
+        int flag_len = query_device_data(devh, "FLAGGET?", flag_resp, 3, cfg.usb_timeout);
         if (flag_len > 0 && parse_flags_response(flag_resp, (size_t)flag_len, &dev_flags) == 0) {
             flags_valid = 1;
             if (dev_flags.warmup > 0)
@@ -377,7 +360,7 @@ int main(int argc, char *argv[])
         } else {
             LOG_DEBUG("FLAGGET? query failed");
         }
-        usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
+        usb_interrupt_read(devh, 0x00000081, buf, 16, cfg.usb_timeout);
     }
 
     /* Query device knobs (KNOBPRE?) for warn thresholds */
@@ -385,7 +368,7 @@ int main(int argc, char *argv[])
     int knobs_valid = 0;
     {
         unsigned char knob_resp[256];
-        int knob_len = query_device_data(devh, "KNOBPRE?", knob_resp, 16, usb_timeout);
+        int knob_len = query_device_data(devh, "KNOBPRE?", knob_resp, 16, cfg.usb_timeout);
         if (knob_len > 0 && parse_knobs_response(knob_resp, (size_t)knob_len, &dev_knobs) == 0) {
             knobs_valid = 1;
             LOG_DEBUG("KNOBPRE? query successful");
@@ -394,7 +377,7 @@ int main(int argc, char *argv[])
         } else {
             LOG_DEBUG("KNOBPRE? query failed or no data");
         }
-        usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
+        usb_interrupt_read(devh, 0x00000081, buf, 16, cfg.usb_timeout);
     }
 
     // Publish Home Assistant MQTT auto-discovery configuration
@@ -415,14 +398,14 @@ int main(int argc, char *argv[])
                  "\"manufacturer\":\"%s\","
                  "\"serial_number\":\"%s\","
                  "\"sw_version\":\"%s\"}",
-                 clientid, ha_device_name, model, manufacturer, device_serial, (device_firmware[0] ? device_firmware : "unknown"));
+                 cfg.clientid, cfg.ha_device_name, model, manufacturer, device_serial, (device_firmware[0] ? device_firmware : "unknown"));
     } else {
         snprintf(device_block, sizeof(device_block),
                  "\"device\":{\"identifiers\":[\"%s\"],"
                  "\"name\":\"%s\","
                  "\"model\":\"%s\","
                  "\"manufacturer\":\"%s\"}",
-                 clientid, ha_device_name, model, manufacturer);
+                 cfg.clientid, cfg.ha_device_name, model, manufacturer);
     }
 
     MQTTClient_message disc_msg = MQTTClient_message_initializer;
@@ -433,7 +416,7 @@ int main(int argc, char *argv[])
     // VOC discovery
     char discovery_topic[256];
     snprintf(discovery_topic, sizeof(discovery_topic),
-             "%s/sensor/%s/config", ha_prefix, clientid);
+             "%s/sensor/%s/config", cfg.ha_prefix, cfg.clientid);
     char discovery_payload[1536];
     snprintf(discovery_payload, sizeof(discovery_payload),
              "{\"name\":\"%s VOC\","
@@ -448,7 +431,7 @@ int main(int argc, char *argv[])
              "\"availability_topic\":\"%s\","
              "\"expire_after\":%d,"
              "%s,%s}",
-             ha_device_name, clientid, topicname, clientid,
+             cfg.ha_device_name, cfg.clientid, cfg.topic, cfg.clientid,
              avail_topic, expire_after, device_block, origin_block);
     disc_msg.payload = discovery_payload;
     disc_msg.payloadlen = (int)strlen(discovery_payload);
@@ -458,7 +441,7 @@ int main(int argc, char *argv[])
     // Heating resistance (r_h) discovery
     char rh_disc_topic[256];
     snprintf(rh_disc_topic, sizeof(rh_disc_topic),
-             "%s/sensor/%s_rh/config", ha_prefix, clientid);
+             "%s/sensor/%s_rh/config", cfg.ha_prefix, cfg.clientid);
     char rh_disc_payload[1536];
     snprintf(rh_disc_payload, sizeof(rh_disc_payload),
              "{\"name\":\"%s Heating Resistance\","
@@ -473,7 +456,7 @@ int main(int argc, char *argv[])
              "\"availability_topic\":\"%s\","
              "\"expire_after\":%d,"
              "%s,%s}",
-             ha_device_name, clientid, topicname, clientid,
+             cfg.ha_device_name, cfg.clientid, cfg.topic, cfg.clientid,
              avail_topic, expire_after, device_block, origin_block);
     disc_msg.payload = rh_disc_payload;
     disc_msg.payloadlen = (int)strlen(rh_disc_payload);
@@ -483,7 +466,7 @@ int main(int argc, char *argv[])
     // Sensor resistance (r_s) discovery
     char rs_disc_topic[256];
     snprintf(rs_disc_topic, sizeof(rs_disc_topic),
-             "%s/sensor/%s_rs/config", ha_prefix, clientid);
+             "%s/sensor/%s_rs/config", cfg.ha_prefix, cfg.clientid);
     char rs_disc_payload[1536];
     snprintf(rs_disc_payload, sizeof(rs_disc_payload),
              "{\"name\":\"%s Sensor Resistance\","
@@ -498,7 +481,7 @@ int main(int argc, char *argv[])
              "\"availability_topic\":\"%s\","
              "\"expire_after\":%d,"
              "%s,%s}",
-             ha_device_name, clientid, topicname, clientid,
+             cfg.ha_device_name, cfg.clientid, cfg.topic, cfg.clientid,
              avail_topic, expire_after, device_block, origin_block);
     disc_msg.payload = rs_disc_payload;
     disc_msg.payloadlen = (int)strlen(rs_disc_payload);
@@ -507,13 +490,13 @@ int main(int argc, char *argv[])
 
     // Diagnostic topic for flags/knobs (published once at startup)
     char diag_topic[256];
-    snprintf(diag_topic, sizeof(diag_topic), "%s/diag", topicname);
+    snprintf(diag_topic, sizeof(diag_topic), "%s/diag", cfg.topic);
 
     // Warmup discovery (diagnostic)
     if (flags_valid) {
         char warmup_disc_topic[256];
         snprintf(warmup_disc_topic, sizeof(warmup_disc_topic),
-                 "%s/sensor/%s_warmup/config", ha_prefix, clientid);
+                 "%s/sensor/%s_warmup/config", cfg.ha_prefix, cfg.clientid);
         char warmup_disc_payload[1536];
         snprintf(warmup_disc_payload, sizeof(warmup_disc_payload),
                  "{\"name\":\"%s Warmup\","
@@ -525,7 +508,7 @@ int main(int argc, char *argv[])
                  "\"unique_id\":\"%s_warmup\","
                  "\"availability_topic\":\"%s\","
                  "%s,%s}",
-                 ha_device_name, clientid, diag_topic, clientid,
+                 cfg.ha_device_name, cfg.clientid, diag_topic, cfg.clientid,
                  avail_topic, device_block, origin_block);
         disc_msg.payload = warmup_disc_payload;
         disc_msg.payloadlen = (int)strlen(warmup_disc_payload);
@@ -537,7 +520,7 @@ int main(int argc, char *argv[])
     if (knobs_valid) {
         char warn1_disc_topic[256];
         snprintf(warn1_disc_topic, sizeof(warn1_disc_topic),
-                 "%s/sensor/%s_warn1/config", ha_prefix, clientid);
+                 "%s/sensor/%s_warn1/config", cfg.ha_prefix, cfg.clientid);
         char warn1_disc_payload[1536];
         snprintf(warn1_disc_payload, sizeof(warn1_disc_payload),
                  "{\"name\":\"%s Warn Threshold 1\","
@@ -549,7 +532,7 @@ int main(int argc, char *argv[])
                  "\"unique_id\":\"%s_warn1\","
                  "\"availability_topic\":\"%s\","
                  "%s,%s}",
-                 ha_device_name, clientid, diag_topic, clientid,
+                 cfg.ha_device_name, cfg.clientid, diag_topic, cfg.clientid,
                  avail_topic, device_block, origin_block);
         disc_msg.payload = warn1_disc_payload;
         disc_msg.payloadlen = (int)strlen(warn1_disc_payload);
@@ -558,7 +541,7 @@ int main(int argc, char *argv[])
 
         char warn2_disc_topic[256];
         snprintf(warn2_disc_topic, sizeof(warn2_disc_topic),
-                 "%s/sensor/%s_warn2/config", ha_prefix, clientid);
+                 "%s/sensor/%s_warn2/config", cfg.ha_prefix, cfg.clientid);
         char warn2_disc_payload[1536];
         snprintf(warn2_disc_payload, sizeof(warn2_disc_payload),
                  "{\"name\":\"%s Warn Threshold 2\","
@@ -570,7 +553,7 @@ int main(int argc, char *argv[])
                  "\"unique_id\":\"%s_warn2\","
                  "\"availability_topic\":\"%s\","
                  "%s,%s}",
-                 ha_device_name, clientid, diag_topic, clientid,
+                 cfg.ha_device_name, cfg.clientid, diag_topic, cfg.clientid,
                  avail_topic, device_block, origin_block);
         disc_msg.payload = warn2_disc_payload;
         disc_msg.payloadlen = (int)strlen(warn2_disc_payload);
@@ -611,14 +594,14 @@ int main(int argc, char *argv[])
 		char poll_cmd[16];
 		build_poll_command(poll_seq, poll_cmd);
 		poll_seq = next_poll_seq(poll_seq);
-		ret = usb_interrupt_write(devh, 0x00000002, poll_cmd, 16, usb_timeout);
+		ret = usb_interrupt_write(devh, 0x00000002, poll_cmd, 16, cfg.usb_timeout);
 
 		LOG_DEBUG("Return code from USB write: %d", ret);
 
 		if (ret != 16) {
 			fail_count++;
 			LOG_DEBUG("Write failed, fail_count: %d", fail_count);
-			if (fail_count >= max_retries) {
+			if (fail_count >= cfg.max_retries) {
 				LOG_ERROR("Max retries reached, reconnecting USB");
 				usb_release_interface(devh, 0);
 				usb_close(devh);
@@ -652,9 +635,9 @@ int main(int argc, char *argv[])
 					exit(1);
 				}
 				LOG_INFO("USB reconnect successful");
-				usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
+				usb_interrupt_read(devh, 0x00000081, buf, 16, cfg.usb_timeout);
 			}
-			sleep(poll_interval);
+			sleep(cfg.poll_interval);
 			continue;
 		}
 
@@ -663,20 +646,20 @@ int main(int argc, char *argv[])
 		unsigned char fullbuf[48];
 		memset(fullbuf, 0, 48);
 
-		ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 16, usb_timeout);
+		ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 16, cfg.usb_timeout);
 		LOG_DEBUG("Return code from USB read 1: %d", ret);
 
 		if (ret == 0) {
 			sleep(1);
-			ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 16, usb_timeout);
+			ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 16, cfg.usb_timeout);
 			LOG_DEBUG("Return code from USB read 1 (retry): %d", ret);
 		}
 
 		if (ret == 16) {
-			int ret2 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 16, 16, usb_timeout);
+			int ret2 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 16, 16, cfg.usb_timeout);
 			LOG_DEBUG("Return code from USB read 2: %d", ret2);
 			if (ret2 == 16) {
-				int ret3 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 32, 16, usb_timeout);
+				int ret3 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 32, 16, cfg.usb_timeout);
 				LOG_DEBUG("Return code from USB read 3: %d", ret3);
 			}
 		}
@@ -685,12 +668,12 @@ int main(int argc, char *argv[])
 		{
 			fail_count++;
 			LOG_DEBUG("Read failed, fail_count: %d", fail_count);
-			if (print_voc_only == 1) {
+			if (cfg.print_voc_only == 1) {
 				printf("0\n");
 			} else {
 				LOG_ERROR("Invalid result code: %d", ret);
 			}
-			sleep(poll_interval);
+			sleep(cfg.poll_interval);
 			continue;
 		}
 
@@ -722,12 +705,12 @@ int main(int argc, char *argv[])
 
 		LOG_DEBUG("Read USB [flush]");
 
-		ret = usb_interrupt_read(devh, 0x00000081, buf, 16, usb_timeout);
+		ret = usb_interrupt_read(devh, 0x00000081, buf, 16, cfg.usb_timeout);
 
 		LOG_DEBUG("Return code from USB read: %d", ret);
 
 		if ( voc >= 450 && voc <= 15001) {
-			if (print_voc_only == 1) {
+			if (cfg.print_voc_only == 1) {
 				printf("%d\n", voc);
 			} else {
 				printf("%04d-%02d-%02d %02d:%02d:%02d, ", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
@@ -743,14 +726,14 @@ int main(int argc, char *argv[])
             pubmsg.payloadlen = (int)strlen(json_payload);
             pubmsg.qos = QOS;
             pubmsg.retained = 0;
-            MQTTClient_publishMessage(client, topicname, &pubmsg, &token);
+            MQTTClient_publishMessage(client, cfg.topic, &pubmsg, &token);
             printf("Waiting for up to %d seconds for publication of %s\non topic %s for client with ClientID: %s\n",
-               (int)(TIMEOUT/1000), (char*)pubmsg.payload, topicname, clientid);
+               (int)(TIMEOUT/1000), (char*)pubmsg.payload, cfg.topic, cfg.clientid);
             rc = MQTTClient_waitForCompletion(client, token, TIMEOUT);
             printf("Message with delivery token %d delivered\n", token);
 
 		} else {
-			if (print_voc_only == 1) {
+			if (cfg.print_voc_only == 1) {
 				printf("0\n");
 			} else {
 				printf("%04d-%02d-%02d %02d:%02d:%02d, ", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
@@ -758,10 +741,10 @@ int main(int argc, char *argv[])
 			}
 		}
 
-		if (one_read == 1)
+		if (cfg.one_read == 1)
 			break;
 
-		sleep(poll_interval);
+		sleep(cfg.poll_interval);
 
 		if (shutdown_requested)
 			break;

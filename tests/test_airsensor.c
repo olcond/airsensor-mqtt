@@ -866,6 +866,23 @@ static void suite_svoc_buffer(void) {
          len_15001 + 1 >= 6);
 }
 
+static void suite_config(void) {
+    print_header("Config initialization from environment");
+
+    config_t cfg;
+    config_init_from_env(&cfg);
+
+    TEST("default broker is 127.0.0.1", strcmp(cfg.broker, "127.0.0.1") == 0);
+    TEST("default port is 1883", strcmp(cfg.port, "1883") == 0);
+    TEST("default clientid is airsensor", strcmp(cfg.clientid, "airsensor") == 0);
+    TEST("default topic is home/CO2/voc", strcmp(cfg.topic, "home/CO2/voc") == 0);
+    TEST("default poll_interval is 30", cfg.poll_interval == 30);
+    TEST("default usb_timeout is 1000", cfg.usb_timeout == 1000);
+    TEST("default max_retries is 3", cfg.max_retries == 3);
+    TEST("default print_voc_only is 0", cfg.print_voc_only == 0);
+    TEST("default one_read is 0", cfg.one_read == 0);
+}
+
 /* --------------------------------------------------------------------------
  * Entry point
  * -------------------------------------------------------------------------- */
@@ -892,6 +909,7 @@ int main(void) {
     suite_knobpre_parsing();
     suite_diagnostic_discovery();
     suite_svoc_buffer();
+    suite_config();
 
     printf("\n====================\n");
     printf("Results: %d passed, %d failed\n", tests_passed, tests_failed);

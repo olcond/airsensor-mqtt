@@ -51,6 +51,48 @@ static inline int parse_env_int(const char *val, int default_val, int min_val, i
 }
 
 /* --------------------------------------------------------------------------
+ * Configuration
+ * -------------------------------------------------------------------------- */
+
+typedef struct {
+    const char *broker;
+    const char *port;
+    const char *clientid;
+    const char *topic;
+    const char *ha_prefix;
+    const char *ha_device_name;
+    const char *mqtt_username;
+    const char *mqtt_password;
+    int poll_interval;
+    int usb_timeout;
+    int max_retries;
+    int print_voc_only;
+    int one_read;
+} config_t;
+
+static inline void config_init_from_env(config_t *cfg) {
+    cfg->broker = getenv("MQTT_BROKERNAME");
+    if (!cfg->broker) cfg->broker = "127.0.0.1";
+    cfg->port = getenv("MQTT_PORT");
+    if (!cfg->port) cfg->port = "1883";
+    cfg->clientid = getenv("MQTT_CLIENTID");
+    if (!cfg->clientid) cfg->clientid = "airsensor";
+    cfg->topic = getenv("MQTT_TOPIC");
+    if (!cfg->topic) cfg->topic = "home/CO2/voc";
+    cfg->ha_prefix = getenv("HA_DISCOVERY_PREFIX");
+    if (!cfg->ha_prefix) cfg->ha_prefix = "homeassistant";
+    cfg->ha_device_name = getenv("HA_DEVICE_NAME");
+    if (!cfg->ha_device_name) cfg->ha_device_name = "Air Sensor";
+    cfg->mqtt_username = getenv("MQTT_USERNAME");
+    cfg->mqtt_password = getenv("MQTT_PASSWORD");
+    cfg->poll_interval = parse_env_int(getenv("POLL_INTERVAL"), 30, 10, 3600);
+    cfg->usb_timeout = parse_env_int(getenv("USB_TIMEOUT"), 1000, 250, 10000);
+    cfg->max_retries = parse_env_int(getenv("MAX_RETRIES"), 3, 1, 20);
+    cfg->print_voc_only = 0;
+    cfg->one_read = 0;
+}
+
+/* --------------------------------------------------------------------------
  * VOC range validation
  * -------------------------------------------------------------------------- */
 
