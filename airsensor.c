@@ -783,7 +783,7 @@ int main(int argc, char *argv[])
                  "{\"warmup\":%u,\"burn_in\":%u,\"warn1\":%u,\"warn2\":%u}",
                  dev_flags.warmup, dev_flags.burn_in, dev_knobs.warn1, dev_knobs.warn2);
         pubmsg.payload = diag_payload;
-        pubmsg.payloadlen = strlen(diag_payload);
+        pubmsg.payloadlen = (int)strlen(diag_payload);
         pubmsg.qos = QOS;
         pubmsg.retained = 1;
         MQTTClient_publishMessage(client, diag_topic, &pubmsg, &token);
@@ -947,7 +947,7 @@ int main(int argc, char *argv[])
                 voc, rh_raw / 100.0, r_s, debug_val, pwm_val);
 
             pubmsg.payload = json_payload;
-            pubmsg.payloadlen = strlen(json_payload);
+            pubmsg.payloadlen = (int)strlen(json_payload);
             pubmsg.qos = QOS;
             pubmsg.retained = 0;
             MQTTClient_publishMessage(client, topicname, &pubmsg, &token);
@@ -966,10 +966,26 @@ int main(int argc, char *argv[])
 		}
 
 		if (one_read == 1)
-			exit(0);
+			break;
 
 		sleep(poll_interval);
 
 	}
+
+	usb_release_interface(devh, 0);
+	usb_close(devh);
+	{
+		MQTTClient_message off_msg = MQTTClient_message_initializer;
+		MQTTClient_deliveryToken off_tk;
+		off_msg.payload = "offline";
+		off_msg.payloadlen = 7;
+		off_msg.qos = QOS;
+		off_msg.retained = 1;
+		MQTTClient_publishMessage(client, g_avail_topic, &off_msg, &off_tk);
+		MQTTClient_waitForCompletion(client, off_tk, TIMEOUT);
+	}
+	MQTTClient_disconnect(client, 10000);
+	MQTTClient_destroy(&client);
+	return 0;
 
 }
