@@ -193,29 +193,15 @@ int main(int argc, char *argv[])
 	product = 0x2013;
 	dev = NULL;
 
-	while ((argc > 1) && (argv[1][0] == '-'))
-	{
-		switch (argv[1][1])
-		{
-			case 'd':
-				log_level = LOG_LEVEL_DEBUG;
-				break;
-
-			case 'v':
-				cfg.print_voc_only = 1;
-				break;
-
-			case 'o':
-				cfg.one_read = 1;
-				break;
-
-			case 'h':
-				help();
-
+	int opt;
+	while ((opt = getopt(argc, argv, "dvoh")) != -1) {
+		switch (opt) {
+			case 'd': log_level = LOG_LEVEL_DEBUG; break;
+			case 'v': cfg.print_voc_only = 1; break;
+			case 'o': cfg.one_read = 1; break;
+			case 'h': /* fallthrough */
+			default:  help();
 		}
-
-		++argv;
-		--argc;
 	}
 
 	LOG_DEBUG("Init USB");
