@@ -17,6 +17,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../airsensor.h"
+
 /* --------------------------------------------------------------------------
  * Minimal test runner
  * -------------------------------------------------------------------------- */
@@ -40,20 +42,10 @@ static void print_header(const char *suite) {
 }
 
 /* --------------------------------------------------------------------------
- * Logic replicated from airsensor.c
+ * Test-only buffer parsing helpers
  *
- * Each helper mirrors the exact expression used in production code.
+ * These helpers parse the 16-byte USB response buffer for testing purposes.
  * -------------------------------------------------------------------------- */
-
-/*
- * VOC range check — airsensor.c
- *   if ( voc >= 450 && voc <= 15001)
- *
- * AppliedSensor spec: 450–2000 ppm.  The code accepts up to 15001.
- */
-static int voc_in_range(unsigned short voc) {
-    return (voc >= 450 && voc <= 15001);
-}
 
 /*
  * USB response buffer layout (16 bytes, per FHEM 38_CO20.pm reference):
@@ -97,81 +89,6 @@ static unsigned int parse_rs_from_buf(const unsigned char *buf) {
     return (unsigned int)buf[12]
          | ((unsigned int)buf[13] << 8)
          | ((unsigned int)buf[14] << 16);
-}
-
-/*
- * Parse serial number from *IDN? response text.
- * Looks for "S/N:" marker and extracts the serial string.
- * Returns 0 on success, -1 if marker not found.
- */
-static int parse_serial_from_idn(const char *response, char *serial, size_t serial_size) {
-    const char *pos = strstr(response, "S/N:");
-    if (!pos) {
-        /* Fallback: copy whole trimmed string as serial if no marker found */
-        size_t j = 0;
-        size_t dest_idx = 0;
-        while (response[j] && dest_idx < serial_size - 1) {
-            char c = response[j];
-            if (c != '\r' && c != '\n' && c != ' ') {
-                serial[dest_idx++] = c;
-            }
-            j++;
-        }
-        serial[dest_idx] = '\0';
-        return (dest_idx > 0) ? 0 : -1;
-    }
-    pos += 4;
-    size_t i = 0;
-    while (pos[i]
-           && pos[i] != ' '
-           && pos[i] != '\n'
-           && pos[i] != '\r'
-           && pos[i] != ';'
-           && pos[i] != '@'
-           && i < serial_size - 1) {
-        serial[i] = pos[i];
-        i++;
-    }
-    serial[i] = '\0';
-    return 0;
-}
-
-/*
- * Parse firmware version from *IDN? response text.
- * Looks for "FW:" marker and extracts the version string.
- * Returns 0 on success, -1 if marker not found.
- */
-static int parse_firmware_from_idn(const char *response, char *firmware, size_t fw_size) {
-    const char *pos = strstr(response, "FW:");
-    if (pos) {
-        pos += 3;
-        size_t i = 0;
-        while (pos[i]
-               && pos[i] != ' '
-               && pos[i] != '\n'
-               && pos[i] != '\r'
-               && pos[i] != ';'
-               && pos[i] != '@'
-               && i < fw_size - 1) {
-            firmware[i] = pos[i];
-            i++;
-        }
-        firmware[i] = '\0';
-        return 0;
-    }
-    /* Fallback: parse between first ';' and '$;;MCU', strip trailing '$' */
-    const char *start = strchr(response, ';');
-    if (!start) return -1;
-    start++;
-    const char *end = strstr(start, "$;;MCU");
-    if (!end) return -1;
-    /* strip trailing '$' from value before the marker */
-    while (end > start && *(end - 1) == '$') end--;
-    size_t len = (size_t)(end - start);
-    if (len == 0 || len >= fw_size) return -1;
-    memcpy(firmware, start, len);
-    firmware[len] = '\0';
-    return 0;
 }
 
 /*
@@ -578,48 +495,48 @@ static void suite_idn_parsing(void) {
     char firmware[20];
     int ret;
 
-    ret = parse_serial_from_idn("DEVICE S/N:4142434445-000001 FW:1.12p5 CPU:ATmega32U4",
-                                 serial, sizeof(serial));
+    ret = parse_serial_from_idn_response("DEVICE S/N:4142434445-000001 FW:1.12p5 CPU:ATmega32U4",
+                                          serial, sizeof(serial));
     TEST("serial found in typical response", ret == 0);
     TEST("serial value: 4142434445-000001",
          strcmp(serial, "4142434445-000001") == 0);
 
-    ret = parse_firmware_from_idn("DEVICE S/N:4142434445-000001 FW:1.12p5 CPU:ATmega32U4",
-                                   firmware, sizeof(firmware));
+    ret = parse_firmware_from_idn_response("DEVICE S/N:4142434445-000001 FW:1.12p5 CPU:ATmega32U4",
+                                            firmware, sizeof(firmware));
     TEST("firmware found in typical response", ret == 0);
     TEST("firmware value: 1.12p5", strcmp(firmware, "1.12p5") == 0);
 
-    ret = parse_serial_from_idn("NO SERIAL HERE", serial, sizeof(serial));
-    TEST("bare string extracted when S/N: missing", ret == 0 && strcmp(serial, "NOSERIALHERE") == 0);
+    ret = parse_serial_from_idn_response("NO SERIAL HERE", serial, sizeof(serial));
+    TEST("no S/N: marker returns -1", ret == -1);
 
-    ret = parse_firmware_from_idn("NO FIRMWARE HERE", firmware, sizeof(firmware));
+    ret = parse_firmware_from_idn_response("NO FIRMWARE HERE", firmware, sizeof(firmware));
     TEST("firmware not found returns -1", ret == -1);
 
-    ret = parse_serial_from_idn("S/N:ABCDEF123456", serial, sizeof(serial));
+    ret = parse_serial_from_idn_response("S/N:ABCDEF123456", serial, sizeof(serial));
     TEST("serial at end of string", ret == 0);
     TEST("serial value: ABCDEF123456", strcmp(serial, "ABCDEF123456") == 0);
 
-    ret = parse_firmware_from_idn("FW:2.0", firmware, sizeof(firmware));
+    ret = parse_firmware_from_idn_response("FW:2.0", firmware, sizeof(firmware));
     TEST("firmware at end of string", ret == 0);
     TEST("firmware value: 2.0", strcmp(firmware, "2.0") == 0);
 
-    ret = parse_serial_from_idn("S/N:ABC123\nFW:1.0\n", serial, sizeof(serial));
+    ret = parse_serial_from_idn_response("S/N:ABC123\nFW:1.0\n", serial, sizeof(serial));
     TEST("serial terminated by newline", ret == 0);
     TEST("serial value: ABC123", strcmp(serial, "ABC123") == 0);
 
-    ret = parse_serial_from_idn("S/N:ABC123;FW:1.2", serial, sizeof(serial));
+    ret = parse_serial_from_idn_response("S/N:ABC123;FW:1.2", serial, sizeof(serial));
     TEST("serial terminated by semicolon", ret == 0);
     TEST("serial value: ABC123", strcmp(serial, "ABC123") == 0);
 
-    ret = parse_firmware_from_idn("FW:1.12p5;MCU:ATmega", firmware, sizeof(firmware));
+    ret = parse_firmware_from_idn_response("FW:1.12p5;MCU:ATmega", firmware, sizeof(firmware));
     TEST("firmware terminated by semicolon", ret == 0);
     TEST("firmware value: 1.12p5", strcmp(firmware, "1.12p5") == 0);
 
-    ret = parse_firmware_from_idn("FW:1.12p5@@@@", firmware, sizeof(firmware));
+    ret = parse_firmware_from_idn_response("FW:1.12p5@@@@", firmware, sizeof(firmware));
     TEST("firmware terminated by @ padding", ret == 0);
     TEST("firmware value with @ terminator", strcmp(firmware, "1.12p5") == 0);
 
-    ret = parse_firmware_from_idn("...;1.12p5$;;MCU...", firmware, sizeof(firmware));
+    ret = parse_firmware_from_idn_response("...;1.12p5$;;MCU...", firmware, sizeof(firmware));
     TEST("firmware fallback marker parsed", ret == 0);
     TEST("firmware fallback value: 1.12p5", strcmp(firmware, "1.12p5") == 0);
 }
@@ -649,23 +566,6 @@ static void suite_json_payload(void) {
 }
 
 /* --- Poll command with sequence numbers ---------------------------------- */
-
-/*
- * Build a TRF? poll command with sequence number (per FHEM CO20 protocol).
- * Format: "@" + seq_byte + "*TRF?\n" + "@" padding to 16 bytes.
- * FHEM uses seq range 0x67–0xFF, wrapping back to 0x67.
- */
-static void build_poll_command(unsigned char seq, char *cmd) {
-    cmd[0] = '@';
-    cmd[1] = (char)seq;
-    cmd[2] = '*'; cmd[3] = 'T'; cmd[4] = 'R';
-    cmd[5] = '\n';
-    for (int i = 6; i < 16; i++) cmd[i] = '@';
-}
-
-static unsigned char next_poll_seq(unsigned char current) {
-    return (current < 0xFF) ? (unsigned char)(current + 1) : 0x67;
-}
 
 static void suite_poll_command(void) {
     print_header("Poll command with sequence numbers");
@@ -700,14 +600,6 @@ static void suite_poll_command(void) {
 }
 
 /* --- Environment variable parsing with bounds ---------------------------- */
-
-static int parse_env_int(const char *val, int default_val, int min_val, int max_val) {
-    if (!val || val[0] == '\0') return default_val;
-    int v = atoi(val);
-    if (v < min_val) return min_val;
-    if (v > max_val) return max_val;
-    return v;
-}
 
 static void suite_env_parsing(void) {
     print_header("Environment variable parsing with bounds");
@@ -760,16 +652,6 @@ static void suite_retry_logic(void) {
 
 /* --- Data command building (FLAGGET?, KNOBPRE?) -------------------------- */
 
-/*
- * Build a data query command with 4-hex-digit sequence number.
- * Format: "@" + seq4(4 hex chars) + reqstr + "\n" + "@" padding → 16 bytes
- */
-static void build_data_command(unsigned short seq4, const char *reqstr, char *cmd) {
-    char tmp[32];
-    snprintf(tmp, sizeof(tmp), "@%04X%s\n@@@@@@@@@@@@@@@@", seq4, reqstr);
-    memcpy(cmd, tmp, 16);
-}
-
 static void suite_data_command(void) {
     print_header("Data command building (FLAGGET?, KNOBPRE?)");
 
@@ -795,32 +677,6 @@ static void suite_data_command(void) {
 }
 
 /* --- FLAGGET? response parsing ------------------------------------------- */
-
-typedef struct {
-    unsigned short warmup;
-    unsigned short burn_in;
-    unsigned short reset_baseline;
-    unsigned short calibrate_heater;
-    unsigned short logging;
-} device_flags_t;
-
-/*
- * Parse FLAGGET? response.
- * Finds ';' delimiter, then reads 5 LE16 values at offsets +2, +6, +10, +14, +18.
- * Returns 0 on success, -1 if delimiter not found or data too short.
- */
-static int parse_flags_response(const unsigned char *data, size_t len, device_flags_t *flags) {
-    const unsigned char *semi = memchr(data, ';', len);
-    if (!semi) return -1;
-    size_t offset = (size_t)(semi - data);
-    if (offset + 20 > len) return -1;
-    flags->warmup           = semi[2]  | ((unsigned short)semi[3]  << 8);
-    flags->burn_in          = semi[6]  | ((unsigned short)semi[7]  << 8);
-    flags->reset_baseline   = semi[10] | ((unsigned short)semi[11] << 8);
-    flags->calibrate_heater = semi[14] | ((unsigned short)semi[15] << 8);
-    flags->logging          = semi[18] | ((unsigned short)semi[19] << 8);
-    return 0;
-}
 
 static void suite_flagget_parsing(void) {
     print_header("FLAGGET? response parsing");
@@ -872,34 +728,6 @@ static void suite_flagget_parsing(void) {
 }
 
 /* --- KNOBPRE? response parsing ------------------------------------------- */
-
-typedef struct {
-    unsigned short warn1;
-    unsigned short warn2;
-} device_knobs_t;
-
-/*
- * Parse KNOBPRE? response for warn thresholds.
- * Searches for "warn1" and "warn2" markers and reads LE16 at marker+22.
- * Returns 0 on success (at least warn1 found), -1 if no markers found.
- */
-static int parse_knobs_response(const unsigned char *data, size_t len, device_knobs_t *knobs) {
-    knobs->warn1 = 0;
-    knobs->warn2 = 0;
-    int found = 0;
-
-    for (size_t i = 0; i + 24 <= len; i++) {
-        if (memcmp(data + i, "warn1", 5) == 0 && i + 24 <= len) {
-            knobs->warn1 = data[i+22] | ((unsigned short)data[i+23] << 8);
-            found = 1;
-        }
-        if (memcmp(data + i, "warn2", 5) == 0 && i + 24 <= len) {
-            knobs->warn2 = data[i+22] | ((unsigned short)data[i+23] << 8);
-            found = 1;
-        }
-    }
-    return found ? 0 : -1;
-}
 
 static void suite_knobpre_parsing(void) {
     print_header("KNOBPRE? response parsing (warn thresholds)");

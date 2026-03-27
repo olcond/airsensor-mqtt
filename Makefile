@@ -9,10 +9,10 @@ TEST    = tests/test_airsensor
 
 all: $(BIN)
 
-$(BIN): airsensor.c
+$(BIN): airsensor.c airsensor.h
 	$(CC) $(CFLAGS) -o $(BIN) airsensor.c $(LDFLAGS)
 
-$(TEST): tests/test_airsensor.c
+$(TEST): tests/test_airsensor.c airsensor.h
 	$(CC) $(CFLAGS) -o $(TEST) tests/test_airsensor.c
 
 test: $(TEST)
