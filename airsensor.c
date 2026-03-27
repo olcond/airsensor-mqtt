@@ -140,6 +140,78 @@ int query_device_id(struct usb_dev_handle *handle, char *resp_buf, size_t resp_s
     return (total > 0) ? 0 : -1;
 }
 
+typedef struct {
+    const char *suffix;       /* e.g. "_rh", "_rs", "_warmup", "_warn1", "_warn2", or "_voc" for primary */
+    const char *name;         /* "VOC", "Heating Resistance", etc. */
+    const char *value_tpl;    /* "{{ value_json.voc }}", etc. */
+    const char *unit;         /* "ppm", "Ω", "min", etc. */
+    const char *device_class; /* NULL if none */
+    const char *state_class;  /* "measurement" or NULL */
+    const char *entity_cat;   /* "diagnostic" or NULL */
+    const char *icon;         /* "mdi:resistor" or NULL */
+    int precision;            /* suggested_display_precision, -1 to omit */
+    int expire_after;         /* -1 to omit */
+    const char *state_topic;
+    const char *avail_topic;
+} discovery_entity_t;
+
+static void publish_discovery(MQTTClient client_handle,
+                              const config_t *cfg,
+                              const char *device_block,
+                              const char *origin_block,
+                              const discovery_entity_t *ent) {
+    char topic[256];
+    snprintf(topic, sizeof(topic), "%s/sensor/%s%s/config",
+             cfg->ha_prefix, cfg->clientid, ent->suffix);
+
+    char payload[1536];
+    int pos = 0;
+    pos += snprintf(payload + pos, sizeof(payload) - pos,
+                    "{\"name\":\"%s %s\","
+                    "\"object_id\":\"%s%s\","
+                    "\"state_topic\":\"%s\","
+                    "\"value_template\":\"%s\","
+                    "\"unit_of_measurement\":\"%s\",",
+                    cfg->ha_device_name, ent->name,
+                    cfg->clientid, ent->suffix + 1,  /* skip leading _ */
+                    ent->state_topic, ent->value_tpl, ent->unit);
+
+    if (ent->device_class)
+        pos += snprintf(payload + pos, sizeof(payload) - pos,
+                        "\"device_class\":\"%s\",", ent->device_class);
+    if (ent->state_class)
+        pos += snprintf(payload + pos, sizeof(payload) - pos,
+                        "\"state_class\":\"%s\",", ent->state_class);
+    if (ent->entity_cat)
+        pos += snprintf(payload + pos, sizeof(payload) - pos,
+                        "\"entity_category\":\"%s\",", ent->entity_cat);
+    if (ent->icon)
+        pos += snprintf(payload + pos, sizeof(payload) - pos,
+                        "\"icon\":\"%s\",", ent->icon);
+    if (ent->precision >= 0)
+        pos += snprintf(payload + pos, sizeof(payload) - pos,
+                        "\"suggested_display_precision\":%d,", ent->precision);
+    if (ent->expire_after >= 0)
+        pos += snprintf(payload + pos, sizeof(payload) - pos,
+                        "\"expire_after\":%d,", ent->expire_after);
+
+    snprintf(payload + pos, sizeof(payload) - pos,
+                    "\"unique_id\":\"%s%s\","
+                    "\"availability_topic\":\"%s\","
+                    "%s,%s}",
+                    cfg->clientid, ent->suffix,
+                    ent->avail_topic, device_block, origin_block);
+
+    MQTTClient_message disc_msg = MQTTClient_message_initializer;
+    MQTTClient_deliveryToken disc_token;
+    disc_msg.payload = payload;
+    disc_msg.payloadlen = (int)strlen(payload);
+    disc_msg.qos = QOS;
+    disc_msg.retained = 1;
+    MQTTClient_publishMessage(client_handle, topic, &disc_msg, &disc_token);
+    MQTTClient_waitForCompletion(client_handle, disc_token, TIMEOUT);
+}
+
 int main(int argc, char *argv[])
 {
     config_t cfg;
@@ -394,85 +466,38 @@ int main(int argc, char *argv[])
                  cfg.clientid, cfg.ha_device_name, model, manufacturer);
     }
 
-    MQTTClient_message disc_msg = MQTTClient_message_initializer;
-    MQTTClient_deliveryToken disc_token;
-    disc_msg.qos = QOS;
-    disc_msg.retained = 1;
-
     // VOC discovery
-    char discovery_topic[256];
-    snprintf(discovery_topic, sizeof(discovery_topic),
-             "%s/sensor/%s/config", cfg.ha_prefix, cfg.clientid);
-    char discovery_payload[1536];
-    snprintf(discovery_payload, sizeof(discovery_payload),
-             "{\"name\":\"%s VOC\","
-             "\"object_id\":\"%s_voc\","
-             "\"state_topic\":\"%s\","
-             "\"value_template\":\"{{ value_json.voc }}\","
-             "\"unit_of_measurement\":\"ppm\","
-             "\"device_class\":\"volatile_organic_compounds_parts\","
-             "\"state_class\":\"measurement\","
-             "\"suggested_display_precision\":0,"
-             "\"unique_id\":\"%s_voc\","
-             "\"availability_topic\":\"%s\","
-             "\"expire_after\":%d,"
-             "%s,%s}",
-             cfg.ha_device_name, cfg.clientid, cfg.topic, cfg.clientid,
-             avail_topic, expire_after, device_block, origin_block);
-    disc_msg.payload = discovery_payload;
-    disc_msg.payloadlen = (int)strlen(discovery_payload);
-    MQTTClient_publishMessage(client, discovery_topic, &disc_msg, &disc_token);
-    MQTTClient_waitForCompletion(client, disc_token, TIMEOUT);
+    discovery_entity_t voc_ent = {
+        .suffix = "_voc", .name = "VOC",
+        .value_tpl = "{{ value_json.voc }}", .unit = "ppm",
+        .device_class = "volatile_organic_compounds_parts",
+        .state_class = "measurement", .entity_cat = NULL, .icon = NULL,
+        .precision = 0, .expire_after = expire_after,
+        .state_topic = cfg.topic, .avail_topic = avail_topic
+    };
+    publish_discovery(client, &cfg, device_block, origin_block, &voc_ent);
 
     // Heating resistance (r_h) discovery
-    char rh_disc_topic[256];
-    snprintf(rh_disc_topic, sizeof(rh_disc_topic),
-             "%s/sensor/%s_rh/config", cfg.ha_prefix, cfg.clientid);
-    char rh_disc_payload[1536];
-    snprintf(rh_disc_payload, sizeof(rh_disc_payload),
-             "{\"name\":\"%s Heating Resistance\","
-             "\"object_id\":\"%s_rh\","
-             "\"icon\":\"mdi:resistor\","
-             "\"state_topic\":\"%s\","
-             "\"value_template\":\"{{ value_json.r_h }}\","
-             "\"unit_of_measurement\":\"Ω\","
-             "\"state_class\":\"measurement\","
-             "\"suggested_display_precision\":2,"
-             "\"unique_id\":\"%s_rh\","
-             "\"availability_topic\":\"%s\","
-             "\"expire_after\":%d,"
-             "%s,%s}",
-             cfg.ha_device_name, cfg.clientid, cfg.topic, cfg.clientid,
-             avail_topic, expire_after, device_block, origin_block);
-    disc_msg.payload = rh_disc_payload;
-    disc_msg.payloadlen = (int)strlen(rh_disc_payload);
-    MQTTClient_publishMessage(client, rh_disc_topic, &disc_msg, &disc_token);
-    MQTTClient_waitForCompletion(client, disc_token, TIMEOUT);
+    discovery_entity_t rh_ent = {
+        .suffix = "_rh", .name = "Heating Resistance",
+        .value_tpl = "{{ value_json.r_h }}", .unit = "Ω",
+        .device_class = NULL, .state_class = "measurement",
+        .entity_cat = NULL, .icon = "mdi:resistor",
+        .precision = 2, .expire_after = expire_after,
+        .state_topic = cfg.topic, .avail_topic = avail_topic
+    };
+    publish_discovery(client, &cfg, device_block, origin_block, &rh_ent);
 
     // Sensor resistance (r_s) discovery
-    char rs_disc_topic[256];
-    snprintf(rs_disc_topic, sizeof(rs_disc_topic),
-             "%s/sensor/%s_rs/config", cfg.ha_prefix, cfg.clientid);
-    char rs_disc_payload[1536];
-    snprintf(rs_disc_payload, sizeof(rs_disc_payload),
-             "{\"name\":\"%s Sensor Resistance\","
-             "\"object_id\":\"%s_rs\","
-             "\"icon\":\"mdi:resistor\","
-             "\"state_topic\":\"%s\","
-             "\"value_template\":\"{{ value_json.r_s }}\","
-             "\"unit_of_measurement\":\"Ω\","
-             "\"state_class\":\"measurement\","
-             "\"suggested_display_precision\":0,"
-             "\"unique_id\":\"%s_rs\","
-             "\"availability_topic\":\"%s\","
-             "\"expire_after\":%d,"
-             "%s,%s}",
-             cfg.ha_device_name, cfg.clientid, cfg.topic, cfg.clientid,
-             avail_topic, expire_after, device_block, origin_block);
-    disc_msg.payload = rs_disc_payload;
-    disc_msg.payloadlen = (int)strlen(rs_disc_payload);
-    MQTTClient_publishMessage(client, rs_disc_topic, &disc_msg, &disc_token);
-    MQTTClient_waitForCompletion(client, disc_token, TIMEOUT);
+    discovery_entity_t rs_ent = {
+        .suffix = "_rs", .name = "Sensor Resistance",
+        .value_tpl = "{{ value_json.r_s }}", .unit = "Ω",
+        .device_class = NULL, .state_class = "measurement",
+        .entity_cat = NULL, .icon = "mdi:resistor",
+        .precision = 0, .expire_after = expire_after,
+        .state_topic = cfg.topic, .avail_topic = avail_topic
+    };
+    publish_discovery(client, &cfg, device_block, origin_block, &rs_ent);
 
     // Diagnostic topic for flags/knobs (published once at startup)
     char diag_topic[256];
@@ -480,71 +505,38 @@ int main(int argc, char *argv[])
 
     // Warmup discovery (diagnostic)
     if (flags_valid) {
-        char warmup_disc_topic[256];
-        snprintf(warmup_disc_topic, sizeof(warmup_disc_topic),
-                 "%s/sensor/%s_warmup/config", cfg.ha_prefix, cfg.clientid);
-        char warmup_disc_payload[1536];
-        snprintf(warmup_disc_payload, sizeof(warmup_disc_payload),
-                 "{\"name\":\"%s Warmup\","
-                 "\"object_id\":\"%s_warmup\","
-                 "\"state_topic\":\"%s\","
-                 "\"value_template\":\"{{ value_json.warmup }}\","
-                 "\"unit_of_measurement\":\"min\","
-                 "\"entity_category\":\"diagnostic\","
-                 "\"unique_id\":\"%s_warmup\","
-                 "\"availability_topic\":\"%s\","
-                 "%s,%s}",
-                 cfg.ha_device_name, cfg.clientid, diag_topic, cfg.clientid,
-                 avail_topic, device_block, origin_block);
-        disc_msg.payload = warmup_disc_payload;
-        disc_msg.payloadlen = (int)strlen(warmup_disc_payload);
-        MQTTClient_publishMessage(client, warmup_disc_topic, &disc_msg, &disc_token);
-        MQTTClient_waitForCompletion(client, disc_token, TIMEOUT);
+        discovery_entity_t warmup_ent = {
+            .suffix = "_warmup", .name = "Warmup",
+            .value_tpl = "{{ value_json.warmup }}", .unit = "min",
+            .device_class = NULL, .state_class = NULL,
+            .entity_cat = "diagnostic", .icon = NULL,
+            .precision = -1, .expire_after = -1,
+            .state_topic = diag_topic, .avail_topic = avail_topic
+        };
+        publish_discovery(client, &cfg, device_block, origin_block, &warmup_ent);
     }
 
     // Warn threshold discovery (diagnostic)
     if (knobs_valid) {
-        char warn1_disc_topic[256];
-        snprintf(warn1_disc_topic, sizeof(warn1_disc_topic),
-                 "%s/sensor/%s_warn1/config", cfg.ha_prefix, cfg.clientid);
-        char warn1_disc_payload[1536];
-        snprintf(warn1_disc_payload, sizeof(warn1_disc_payload),
-                 "{\"name\":\"%s Warn Threshold 1\","
-                 "\"object_id\":\"%s_warn1\","
-                 "\"state_topic\":\"%s\","
-                 "\"value_template\":\"{{ value_json.warn1 }}\","
-                 "\"unit_of_measurement\":\"ppm\","
-                 "\"entity_category\":\"diagnostic\","
-                 "\"unique_id\":\"%s_warn1\","
-                 "\"availability_topic\":\"%s\","
-                 "%s,%s}",
-                 cfg.ha_device_name, cfg.clientid, diag_topic, cfg.clientid,
-                 avail_topic, device_block, origin_block);
-        disc_msg.payload = warn1_disc_payload;
-        disc_msg.payloadlen = (int)strlen(warn1_disc_payload);
-        MQTTClient_publishMessage(client, warn1_disc_topic, &disc_msg, &disc_token);
-        MQTTClient_waitForCompletion(client, disc_token, TIMEOUT);
+        discovery_entity_t warn1_ent = {
+            .suffix = "_warn1", .name = "Warn Threshold 1",
+            .value_tpl = "{{ value_json.warn1 }}", .unit = "ppm",
+            .device_class = NULL, .state_class = NULL,
+            .entity_cat = "diagnostic", .icon = NULL,
+            .precision = -1, .expire_after = -1,
+            .state_topic = diag_topic, .avail_topic = avail_topic
+        };
+        publish_discovery(client, &cfg, device_block, origin_block, &warn1_ent);
 
-        char warn2_disc_topic[256];
-        snprintf(warn2_disc_topic, sizeof(warn2_disc_topic),
-                 "%s/sensor/%s_warn2/config", cfg.ha_prefix, cfg.clientid);
-        char warn2_disc_payload[1536];
-        snprintf(warn2_disc_payload, sizeof(warn2_disc_payload),
-                 "{\"name\":\"%s Warn Threshold 2\","
-                 "\"object_id\":\"%s_warn2\","
-                 "\"state_topic\":\"%s\","
-                 "\"value_template\":\"{{ value_json.warn2 }}\","
-                 "\"unit_of_measurement\":\"ppm\","
-                 "\"entity_category\":\"diagnostic\","
-                 "\"unique_id\":\"%s_warn2\","
-                 "\"availability_topic\":\"%s\","
-                 "%s,%s}",
-                 cfg.ha_device_name, cfg.clientid, diag_topic, cfg.clientid,
-                 avail_topic, device_block, origin_block);
-        disc_msg.payload = warn2_disc_payload;
-        disc_msg.payloadlen = (int)strlen(warn2_disc_payload);
-        MQTTClient_publishMessage(client, warn2_disc_topic, &disc_msg, &disc_token);
-        MQTTClient_waitForCompletion(client, disc_token, TIMEOUT);
+        discovery_entity_t warn2_ent = {
+            .suffix = "_warn2", .name = "Warn Threshold 2",
+            .value_tpl = "{{ value_json.warn2 }}", .unit = "ppm",
+            .device_class = NULL, .state_class = NULL,
+            .entity_cat = "diagnostic", .icon = NULL,
+            .precision = -1, .expire_after = -1,
+            .state_topic = diag_topic, .avail_topic = avail_topic
+        };
+        publish_discovery(client, &cfg, device_block, origin_block, &warn2_ent);
     }
 
     // Publish diagnostic data once at startup
