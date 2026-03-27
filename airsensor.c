@@ -1,20 +1,20 @@
 /*
 
-	airsensor.c
+    airsensor.c
 
-	Original source: Rodric Yates http://code.google.com/p/airsensor-linux-usb/
-	Modified from source: Ap15e (MiOS) http://wiki.micasaverde.com/index.php/CO2_Sensor
-	Modified by Sebastian Sjoholm, sebastian.sjoholm@gmail.com
+    Original source: Rodric Yates http://code.google.com/p/airsensor-linux-usb/
+    Modified from source: Ap15e (MiOS) http://wiki.micasaverde.com/index.php/CO2_Sensor
+    Modified by Sebastian Sjoholm, sebastian.sjoholm@gmail.com
 
-	This version created by Veit Olschinski, volschin@googlemail.com
+    This version created by Veit Olschinski, volschin@googlemail.com
 
-	requirement:
+    requirement:
 
-	libusb libpaho-mqtt3c libpthread
+    libusb libpaho-mqtt3c libpthread
 
-	compile:
+    compile:
 
-	gcc -o airsensor airsensor.c -lusb -lpaho-mqtt3c -lpthread
+    gcc -o airsensor airsensor.c -lusb -lpaho-mqtt3c -lpthread
 
 */
 
@@ -56,13 +56,13 @@ static unsigned char poll_seq = 0x67;
 
 void help() {
 
-	printf("AirSensor [options]\n");
-	printf("Options:\n");
-	printf("-d = debug printout\n");
-	printf("-v = Print VOC value only, nothing returns if value out of range (450-2000)\n");
-	printf("-o = One value and then exit\n");
-	printf("-h = Help, this printout\n");
-	exit(0);
+    printf("AirSensor [options]\n");
+    printf("Options:\n");
+    printf("-d = debug printout\n");
+    printf("-v = Print VOC value only, nothing returns if value out of range (450-2000)\n");
+    printf("-o = One value and then exit\n");
+    printf("-h = Help, this printout\n");
+    exit(0);
 
 }
 
@@ -72,18 +72,18 @@ void release_usb_device(int dummy) {
 }
 
 struct usb_device* find_device(int vendor, int product) {
-	struct usb_bus *bus;
+    struct usb_bus *bus;
 
-	for (bus = usb_get_busses(); bus; bus = bus->next) {
-		struct usb_device *dev;
+    for (bus = usb_get_busses(); bus; bus = bus->next) {
+        struct usb_device *dev;
 
-		for (dev = bus->devices; dev; dev = dev->next) {
-			if (dev->descriptor.idVendor == vendor
-				&& dev->descriptor.idProduct == product)
-			return dev;
-		}
-	}
-	return NULL;
+        for (dev = bus->devices; dev; dev = dev->next) {
+            if (dev->descriptor.idVendor == vendor
+                && dev->descriptor.idProduct == product)
+            return dev;
+        }
+    }
+    return NULL;
 }
 
 
@@ -556,146 +556,146 @@ int main(int argc, char *argv[])
         LOG_DEBUG("Diagnostic data published");
     }
 
-	int fail_count = 0;
+    int fail_count = 0;
 
-	rc = MQTTCLIENT_SUCCESS;
-	while(rc==MQTTCLIENT_SUCCESS) {
+    rc = MQTTCLIENT_SUCCESS;
+    while(rc==MQTTCLIENT_SUCCESS) {
 
-		if (shutdown_requested)
-			break;
+        if (shutdown_requested)
+            break;
 
-		time_t t = time(NULL);
-		struct tm tm;
-		localtime_r(&t, &tm);
+        time_t t = time(NULL);
+        struct tm tm;
+        localtime_r(&t, &tm);
 
-		// Build poll command with sequence number (FHEM protocol)
-		LOG_DEBUG("Write data to device");
+        // Build poll command with sequence number (FHEM protocol)
+        LOG_DEBUG("Write data to device");
 
-		char poll_cmd[16];
-		build_poll_command(poll_seq, poll_cmd);
-		poll_seq = next_poll_seq(poll_seq);
-		ret = usb_interrupt_write(devh, 0x00000002, poll_cmd, 16, cfg.usb_timeout);
+        char poll_cmd[16];
+        build_poll_command(poll_seq, poll_cmd);
+        poll_seq = next_poll_seq(poll_seq);
+        ret = usb_interrupt_write(devh, 0x00000002, poll_cmd, 16, cfg.usb_timeout);
 
-		LOG_DEBUG("Return code from USB write: %d", ret);
+        LOG_DEBUG("Return code from USB write: %d", ret);
 
-		if (ret != 16) {
-			fail_count++;
-			LOG_DEBUG("Write failed, fail_count: %d", fail_count);
-			if (fail_count >= cfg.max_retries) {
-				LOG_ERROR("Max retries reached, reconnecting USB");
-				usb_release_interface(devh, 0);
-				usb_close(devh);
-				fail_count = 0;
-				// Re-open device
-				usb_find_busses();
-				usb_find_devices();
-				dev = find_device(vendor, product);
-				if (!dev) {
-					LOG_ERROR("Device not found on reconnect");
-					MQTTClient_disconnect(client, 10000);
-					MQTTClient_destroy(&client);
-					exit(1);
-				}
-				devh = usb_open(dev);
-				if (!devh) {
-					LOG_ERROR("Failed to reopen USB device");
-					MQTTClient_disconnect(client, 10000);
-					MQTTClient_destroy(&client);
-					exit(1);
-				}
-				ret = usb_get_driver_np(devh, 0, buf, sizeof(buf));
-				if (ret == 0)
-					usb_detach_kernel_driver_np(devh, 0);
-				ret = usb_claim_interface(devh, 0);
-				if (ret != 0) {
-					LOG_ERROR("Claim failed on reconnect: %d", ret);
-					usb_close(devh);
-					MQTTClient_disconnect(client, 10000);
-					MQTTClient_destroy(&client);
-					exit(1);
-				}
-				LOG_INFO("USB reconnect successful");
-				usb_interrupt_read(devh, 0x00000081, buf, 16, cfg.usb_timeout);
-			}
-			sleep(cfg.poll_interval);
-			continue;
-		}
+        if (ret != 16) {
+            fail_count++;
+            LOG_DEBUG("Write failed, fail_count: %d", fail_count);
+            if (fail_count >= cfg.max_retries) {
+                LOG_ERROR("Max retries reached, reconnecting USB");
+                usb_release_interface(devh, 0);
+                usb_close(devh);
+                fail_count = 0;
+                // Re-open device
+                usb_find_busses();
+                usb_find_devices();
+                dev = find_device(vendor, product);
+                if (!dev) {
+                    LOG_ERROR("Device not found on reconnect");
+                    MQTTClient_disconnect(client, 10000);
+                    MQTTClient_destroy(&client);
+                    exit(1);
+                }
+                devh = usb_open(dev);
+                if (!devh) {
+                    LOG_ERROR("Failed to reopen USB device");
+                    MQTTClient_disconnect(client, 10000);
+                    MQTTClient_destroy(&client);
+                    exit(1);
+                }
+                ret = usb_get_driver_np(devh, 0, buf, sizeof(buf));
+                if (ret == 0)
+                    usb_detach_kernel_driver_np(devh, 0);
+                ret = usb_claim_interface(devh, 0);
+                if (ret != 0) {
+                    LOG_ERROR("Claim failed on reconnect: %d", ret);
+                    usb_close(devh);
+                    MQTTClient_disconnect(client, 10000);
+                    MQTTClient_destroy(&client);
+                    exit(1);
+                }
+                LOG_INFO("USB reconnect successful");
+                usb_interrupt_read(devh, 0x00000081, buf, 16, cfg.usb_timeout);
+            }
+            sleep(cfg.poll_interval);
+            continue;
+        }
 
-		LOG_DEBUG("Read USB (Chunk 1 of 3)");
+        LOG_DEBUG("Read USB (Chunk 1 of 3)");
 
-		unsigned char fullbuf[48];
-		memset(fullbuf, 0, 48);
+        unsigned char fullbuf[48];
+        memset(fullbuf, 0, 48);
 
-		ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 16, cfg.usb_timeout);
-		LOG_DEBUG("Return code from USB read 1: %d", ret);
+        ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 16, cfg.usb_timeout);
+        LOG_DEBUG("Return code from USB read 1: %d", ret);
 
-		if (ret == 0) {
-			sleep(1);
-			ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 16, cfg.usb_timeout);
-			LOG_DEBUG("Return code from USB read 1 (retry): %d", ret);
-		}
+        if (ret == 0) {
+            sleep(1);
+            ret = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf, 16, cfg.usb_timeout);
+            LOG_DEBUG("Return code from USB read 1 (retry): %d", ret);
+        }
 
-		if (ret == 16) {
-			int ret2 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 16, 16, cfg.usb_timeout);
-			LOG_DEBUG("Return code from USB read 2: %d", ret2);
-			if (ret2 == 16) {
-				int ret3 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 32, 16, cfg.usb_timeout);
-				LOG_DEBUG("Return code from USB read 3: %d", ret3);
-			}
-		}
+        if (ret == 16) {
+            int ret2 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 16, 16, cfg.usb_timeout);
+            LOG_DEBUG("Return code from USB read 2: %d", ret2);
+            if (ret2 == 16) {
+                int ret3 = usb_interrupt_read(devh, 0x00000081, (char*)fullbuf + 32, 16, cfg.usb_timeout);
+                LOG_DEBUG("Return code from USB read 3: %d", ret3);
+            }
+        }
 
-		if ( !((ret == 0) || (ret == 16)))
-		{
-			fail_count++;
-			LOG_DEBUG("Read failed, fail_count: %d", fail_count);
-			if (cfg.print_voc_only == 1) {
-				printf("0\n");
-			} else {
-				LOG_ERROR("Invalid result code: %d", ret);
-			}
-			sleep(cfg.poll_interval);
-			continue;
-		}
+        if ( !((ret == 0) || (ret == 16)))
+        {
+            fail_count++;
+            LOG_DEBUG("Read failed, fail_count: %d", fail_count);
+            if (cfg.print_voc_only == 1) {
+                printf("0\n");
+            } else {
+                LOG_ERROR("Invalid result code: %d", ret);
+            }
+            sleep(cfg.poll_interval);
+            continue;
+        }
 
-		// Successful read — reset fail counter
-		fail_count = 0;
+        // Successful read — reset fail counter
+        fail_count = 0;
 
-		memcpy(&iresult, fullbuf+2, 2);
-		voc = le16toh(iresult);
+        memcpy(&iresult, fullbuf+2, 2);
+        voc = le16toh(iresult);
 
-		unsigned short debug_val = 0;
-		memcpy(&debug_val, fullbuf+4, 2);
-		debug_val = le16toh(debug_val);
+        unsigned short debug_val = 0;
+        memcpy(&debug_val, fullbuf+4, 2);
+        debug_val = le16toh(debug_val);
 
-		unsigned short pwm_val = 0;
-		memcpy(&pwm_val, fullbuf+6, 2);
-		pwm_val = le16toh(pwm_val);
+        unsigned short pwm_val = 0;
+        memcpy(&pwm_val, fullbuf+6, 2);
+        pwm_val = le16toh(pwm_val);
 
-		memcpy(&rh_raw, fullbuf + 8, 2);
-		rh_raw = le16toh(rh_raw);
+        memcpy(&rh_raw, fullbuf + 8, 2);
+        rh_raw = le16toh(rh_raw);
 
-		r_s = (unsigned int)fullbuf[12]
-		    | ((unsigned int)fullbuf[13] << 8)
-		    | ((unsigned int)fullbuf[14] << 16);
+        r_s = (unsigned int)fullbuf[12]
+            | ((unsigned int)fullbuf[13] << 8)
+            | ((unsigned int)fullbuf[14] << 16);
 
-		LOG_DEBUG("r_h raw: %d", rh_raw);
-		LOG_DEBUG("r_s: %u", r_s);
+        LOG_DEBUG("r_h raw: %d", rh_raw);
+        LOG_DEBUG("r_s: %u", r_s);
 
-		sleep(1);
+        sleep(1);
 
-		LOG_DEBUG("Read USB [flush]");
+        LOG_DEBUG("Read USB [flush]");
 
-		ret = usb_interrupt_read(devh, 0x00000081, buf, 16, cfg.usb_timeout);
+        ret = usb_interrupt_read(devh, 0x00000081, buf, 16, cfg.usb_timeout);
 
-		LOG_DEBUG("Return code from USB read: %d", ret);
+        LOG_DEBUG("Return code from USB read: %d", ret);
 
-		if ( voc >= 450 && voc <= 15001) {
-			if (cfg.print_voc_only == 1) {
-				printf("%d\n", voc);
-			} else {
-				printf("%04d-%02d-%02d %02d:%02d:%02d, ", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
-				printf("VOC: %d, RESULT: OK\n", voc);
-			}
+        if ( voc >= 450 && voc <= 15001) {
+            if (cfg.print_voc_only == 1) {
+                printf("%d\n", voc);
+            } else {
+                printf("%04d-%02d-%02d %02d:%02d:%02d, ", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+                printf("VOC: %d, RESULT: OK\n", voc);
+            }
 
             char json_payload[512];
             snprintf(json_payload, sizeof(json_payload),
@@ -712,39 +712,39 @@ int main(int argc, char *argv[])
             rc = MQTTClient_waitForCompletion(client, token, TIMEOUT);
             printf("Message with delivery token %d delivered\n", token);
 
-		} else {
-			if (cfg.print_voc_only == 1) {
-				printf("0\n");
-			} else {
-				printf("%04d-%02d-%02d %02d:%02d:%02d, ", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
-				printf("VOC: %d, RESULT: Error value out of range\n", voc);
-			}
-		}
+        } else {
+            if (cfg.print_voc_only == 1) {
+                printf("0\n");
+            } else {
+                printf("%04d-%02d-%02d %02d:%02d:%02d, ", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+                printf("VOC: %d, RESULT: Error value out of range\n", voc);
+            }
+        }
 
-		if (cfg.one_read == 1)
-			break;
+        if (cfg.one_read == 1)
+            break;
 
-		sleep(cfg.poll_interval);
+        sleep(cfg.poll_interval);
 
-		if (shutdown_requested)
-			break;
+        if (shutdown_requested)
+            break;
 
-	}
+    }
 
-	usb_release_interface(devh, 0);
-	usb_close(devh);
-	{
-		MQTTClient_message off_msg = MQTTClient_message_initializer;
-		MQTTClient_deliveryToken off_tk;
-		off_msg.payload = "offline";
-		off_msg.payloadlen = 7;
-		off_msg.qos = QOS;
-		off_msg.retained = 1;
-		MQTTClient_publishMessage(client, g_avail_topic, &off_msg, &off_tk);
-		MQTTClient_waitForCompletion(client, off_tk, TIMEOUT);
-	}
-	MQTTClient_disconnect(client, 10000);
-	MQTTClient_destroy(&client);
-	return 0;
+    usb_release_interface(devh, 0);
+    usb_close(devh);
+    {
+        MQTTClient_message off_msg = MQTTClient_message_initializer;
+        MQTTClient_deliveryToken off_tk;
+        off_msg.payload = "offline";
+        off_msg.payloadlen = 7;
+        off_msg.qos = QOS;
+        off_msg.retained = 1;
+        MQTTClient_publishMessage(client, g_avail_topic, &off_msg, &off_tk);
+        MQTTClient_waitForCompletion(client, off_tk, TIMEOUT);
+    }
+    MQTTClient_disconnect(client, 10000);
+    MQTTClient_destroy(&client);
+    return 0;
 
 }
