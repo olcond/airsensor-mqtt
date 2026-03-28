@@ -17,5 +17,4 @@ RUN apt-get update \
   libusb-1.0-0 libpaho-mqtt1.3 ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /airsensor /airsensor
-USER nobody
 ENTRYPOINT ["/airsensor", "-v"]
