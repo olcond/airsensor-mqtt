@@ -25,7 +25,7 @@ Bus 00x Device 00x: ID 03eb:2013 Atmel Corp.
 ## Schnellstart mit Docker
 
 ```bash
-docker run --rm --device=/dev/bus/usb \
+docker run --rm --privileged --device=/dev/bus/usb -v /sys:/sys:ro \
   -e MQTT_BROKERNAME=192.168.1.10 \
   -e MQTT_PORT=1883 \
   -e MQTT_CLIENTID=airsensor \
@@ -134,7 +134,7 @@ Die gesamte MQTT-Konfiguration erfolgt ueber Umgebungsvariablen. Alle Variablen 
 **Docker mit Authentifizierung:**
 
 ```bash
-docker run --rm --device=/dev/bus/usb \
+docker run --rm --privileged --device=/dev/bus/usb -v /sys:/sys:ro \
   -e MQTT_BROKERNAME=mqtt.example.com \
   -e MQTT_PORT=1883 \
   -e MQTT_CLIENTID=wohnzimmer-sensor \
@@ -147,7 +147,7 @@ docker run --rm --device=/dev/bus/usb \
 **Docker mit TLS-Verschluesselung:**
 
 ```bash
-docker run --rm --device=/dev/bus/usb \
+docker run --rm --privileged --device=/dev/bus/usb -v /sys:/sys:ro \
   -e MQTT_BROKERNAME=mqtt.example.com \
   -e MQTT_PORT=8883 \
   -e MQTT_TLS=1 \
@@ -164,8 +164,11 @@ services:
     image: volschin/airsensor:latest
     container_name: airsensor
     restart: unless-stopped
+    privileged: true
     devices:
       - /dev/bus/usb:/dev/bus/usb
+    volumes:
+      - /sys:/sys:ro
     environment:
       MQTT_BROKERNAME: "192.168.1.10"
       MQTT_PORT: "1883"
@@ -178,7 +181,7 @@ services:
       POLL_INTERVAL: "30"
 ```
 
-> **Hinweis:** Der Container benoetigt Zugriff auf den USB-Bus (`/dev/bus/usb`). Alternativ kann auch nur das spezifische USB-Geraet durchgereicht werden, z.B. `/dev/bus/usb/001/005`.
+> **Hinweis:** Der Container benoetigt `privileged: true` und Zugriff auf `/sys` (read-only), da libusb 1.0 sowohl die USB-Devicenodes als auch sysfs fuer die Geraeteerkennung benoetigt.
 
 ## Messwerte
 
@@ -331,7 +334,7 @@ Die VOC-Discovery-Konfiguration sieht beispielsweise so aus:
 Der Geraetenamen und das Discovery-Praefix koennen ueber Umgebungsvariablen angepasst werden:
 
 ```bash
-docker run --rm --device=/dev/bus/usb \
+docker run --rm --privileged --device=/dev/bus/usb -v /sys:/sys:ro \
   -e MQTT_BROKERNAME=192.168.1.10 \
   -e MQTT_TOPIC=home/CO2/voc \
   -e HA_DEVICE_NAME="Wohnzimmer Sensor" \

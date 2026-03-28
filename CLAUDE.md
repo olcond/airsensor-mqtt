@@ -97,7 +97,7 @@ Note: The Dockerfile uses dynamic linking; the runtime stage installs the requir
 ### Docker run example
 
 ```bash
-docker run --rm --device=/dev/bus/usb \
+docker run --rm --privileged --device=/dev/bus/usb -v /sys:/sys:ro \
   -e MQTT_BROKERNAME=192.168.1.10 \
   -e MQTT_PORT=1883 \
   -e MQTT_TOPIC=home/CO2/voc \
