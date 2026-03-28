@@ -6,13 +6,16 @@ ENV TERM=xterm
 RUN apt-get update \
   && apt-get install -qqy --no-install-recommends apt-utils ca-certificates \
   apt-transport-https \
-#  build-essential gcc make cmake cmake-gui cmake-curses-gui \
   libusb-1.0-0-dev libpaho-mqtt-dev libssl-dev
 
 COPY airsensor.c airsensor.h /
-RUN gcc -static -o airsensor airsensor.c -lusb-1.0 -lpaho-mqtt3cs -lpthread -lssl -lcrypto
+RUN gcc -o airsensor airsensor.c -lusb-1.0 -lpaho-mqtt3cs -lpthread -lssl -lcrypto
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM debian:trixie-slim
+RUN apt-get update \
+  && apt-get install -qqy --no-install-recommends \
+  libusb-1.0-0 libpaho-mqtt1.3 ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /airsensor /airsensor
-USER nonroot
+USER nobody
 ENTRYPOINT ["/airsensor", "-v"]

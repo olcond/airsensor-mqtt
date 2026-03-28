@@ -47,7 +47,7 @@ docker build -t airsensor-mqtt .
 
 The Dockerfile uses a two-stage build:
 1. **builder** — `gcc:15.2` (pinned by digest) with `libusb-1.0-0-dev`, `libpaho-mqtt-dev`, and `libssl-dev` installed
-2. **runtime** — `gcr.io/distroless/static-debian12:nonroot` image with CA certificates
+2. **runtime** — `debian:trixie-slim` with runtime libraries (libusb, paho-mqtt, CA certificates)
 
 The default Docker entrypoint runs with the `-v` flag (VOC-only output mode):
 ```dockerfile
@@ -56,7 +56,7 @@ ENTRYPOINT ["/airsensor", "-v"]
 
 Compilation command (inside builder stage):
 ```bash
-gcc -static -o airsensor airsensor.c -lusb-1.0 -lpaho-mqtt3cs -lpthread -lssl -lcrypto
+gcc -o airsensor airsensor.c -lusb-1.0 -lpaho-mqtt3cs -lpthread -lssl -lcrypto
 ```
 
 ### Local build via Makefile
@@ -77,7 +77,7 @@ Requires `libusb-1.0-0-dev`, `libpaho-mqtt-dev`, and `libssl-dev`:
 gcc -o airsensor airsensor.c -lusb-1.0 -lpaho-mqtt3cs -lpthread -lssl -lcrypto
 ```
 
-Note: The Dockerfile uses `-static` for a self-contained binary; omit for local builds.
+Note: The Dockerfile uses dynamic linking; the runtime stage installs the required shared libraries.
 
 ---
 
