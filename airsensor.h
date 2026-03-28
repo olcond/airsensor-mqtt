@@ -16,7 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define APP_VERSION "0.10.2"
+#define APP_VERSION "0.11.0"
 
 /* --------------------------------------------------------------------------
  * Device data types
@@ -68,6 +68,7 @@ typedef struct {
     int max_retries;
     int print_voc_only;
     int one_read;
+    int tls;
 } config_t;
 
 static inline void config_init_from_env(config_t *cfg) {
@@ -90,6 +91,8 @@ static inline void config_init_from_env(config_t *cfg) {
     cfg->max_retries = parse_env_int(getenv("MAX_RETRIES"), 3, 1, 20);
     cfg->print_voc_only = 0;
     cfg->one_read = 0;
+    const char *tls_env = getenv("MQTT_TLS");
+    cfg->tls = (tls_env && (strcmp(tls_env, "1") == 0 || strcmp(tls_env, "true") == 0)) ? 1 : 0;
 }
 
 /* --------------------------------------------------------------------------

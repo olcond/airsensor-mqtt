@@ -98,8 +98,9 @@ static unsigned int parse_rs_from_buf(const unsigned char *buf) {
  * MQTT address assembly
  */
 static void build_mqtt_address(char *address, size_t size,
-                               const char *host, const char *port) {
-    snprintf(address, size, "tcp://%s:%s", host, port);
+                               const char *host, const char *port, int tls) {
+    const char *proto = tls ? "ssl" : "tcp";
+    snprintf(address, size, "%s://%s:%s", proto, host, port);
 }
 
 /* --------------------------------------------------------------------------
@@ -269,17 +270,25 @@ static void suite_mqtt_address(void) {
 
     char addr[80];
 
-    build_mqtt_address(addr, sizeof(addr), "192.168.1.10", "1883");
+    build_mqtt_address(addr, sizeof(addr), "192.168.1.10", "1883", 0);
     TEST("IPv4 host + port → tcp://192.168.1.10:1883",
          strcmp(addr, "tcp://192.168.1.10:1883") == 0);
 
-    build_mqtt_address(addr, sizeof(addr), "127.0.0.1", "1883");
+    build_mqtt_address(addr, sizeof(addr), "127.0.0.1", "1883", 0);
     TEST("localhost default → tcp://127.0.0.1:1883",
          strcmp(addr, "tcp://127.0.0.1:1883") == 0);
 
-    build_mqtt_address(addr, sizeof(addr), "mqtt.example.com", "8883");
+    build_mqtt_address(addr, sizeof(addr), "mqtt.example.com", "8883", 0);
     TEST("hostname + non-default port → tcp://mqtt.example.com:8883",
          strcmp(addr, "tcp://mqtt.example.com:8883") == 0);
+
+    build_mqtt_address(addr, sizeof(addr), "broker.example.com", "8883", 1);
+    TEST("TLS address → ssl://broker.example.com:8883",
+         strcmp(addr, "ssl://broker.example.com:8883") == 0);
+
+    build_mqtt_address(addr, sizeof(addr), "192.168.1.10", "1883", 1);
+    TEST("TLS with IPv4 → ssl://192.168.1.10:1883",
+         strcmp(addr, "ssl://192.168.1.10:1883") == 0);
 }
 
 /* --- Home Assistant MQTT discovery -------------------------------------- */
@@ -881,6 +890,7 @@ static void suite_config(void) {
     TEST("default max_retries is 3", cfg.max_retries == 3);
     TEST("default print_voc_only is 0", cfg.print_voc_only == 0);
     TEST("default one_read is 0", cfg.one_read == 0);
+    TEST("default tls is 0", cfg.tls == 0);
 }
 
 /* --------------------------------------------------------------------------
