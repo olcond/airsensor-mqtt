@@ -16,7 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define APP_VERSION "0.11.0"
+#define APP_VERSION "1.0.0"
 
 /* --------------------------------------------------------------------------
  * Device data types

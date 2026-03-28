@@ -375,7 +375,7 @@ PRs to update:
 ```c
 #define QOS         1         // MQTT QoS level
 #define TIMEOUT     10000L    // MQTT operation timeout (ms)
-#define APP_VERSION "0.11.0"  // Used in HA discovery origin block
+#define APP_VERSION "1.0.0"  // Used in HA discovery origin block
 
 // USB device identifiers
 vendor  = 0x03eb  // Atmel
