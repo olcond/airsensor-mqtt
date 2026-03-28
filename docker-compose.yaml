@@ -1,0 +1,20 @@
+services:
+  airsensor:
+    image: volschin/airsensor:latest
+    container_name: airsensor
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    volumes:
+      - /sys:/sys:ro
+    environment:
+      MQTT_BROKERNAME: "192.168.1.10"
+      MQTT_PORT: "1883"
+      MQTT_CLIENTID: "airsensor"
+      MQTT_TOPIC: "home/CO2/voc"
+      MQTT_USERNAME: ""
+      MQTT_PASSWORD: ""
+      HA_DISCOVERY_PREFIX: "homeassistant"
+      HA_DEVICE_NAME: "Air Sensor"
+      POLL_INTERVAL: "30"
