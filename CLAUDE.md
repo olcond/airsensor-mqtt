@@ -108,7 +108,7 @@ docker run --rm --privileged --device=/dev/bus/usb -v /sys:/sys:ro \
 
 ## Environment Variables
 
-All configuration is done via environment variables. The code uses null-checked `getenv()` with compiled-in defaults (`airsensor.c:318–332`), so missing variables fall back to the defaults listed below rather than segfaulting. Integer variables use `parse_env_int()` with bounds clamping.
+All configuration is done via environment variables. The code uses null-checked `getenv()` with compiled-in defaults, so missing variables fall back to the defaults listed below rather than segfaulting. Integer variables use `parse_env_int()` with bounds clamping.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -125,7 +125,7 @@ All configuration is done via environment variables. The code uses null-checked 
 | `USB_TIMEOUT` | `1000` | USB read/write timeout in milliseconds (250–10000) |
 | `MAX_RETRIES` | `3` | Max consecutive USB failures before reconnect (1–20) |
 
-`MQTT_USERNAME` and `MQTT_PASSWORD` are passed directly to `conn_opts` via `getenv()` (`airsensor.c:351–352`); they return `NULL` if unset, which the Paho library treats as "no authentication".
+`MQTT_USERNAME` and `MQTT_PASSWORD` are passed directly to `conn_opts` via `getenv()`; they return `NULL` if unset, which the Paho library treats as "no authentication".
 
 `MQTT_TLS` controls the connection protocol: when set to `1` or `true`, the client connects via `ssl://` instead of `tcp://` and enables server certificate authentication.
 
@@ -137,21 +137,25 @@ All configuration is done via environment variables. The code uses null-checked 
 
 ### Actual startup sequence (as coded)
 
-1. Read environment variables and construct the MQTT broker address (`tcp://host:port`) via `snprintf` (`airsensor.c:333–335`)
-2. Configure MQTT Last Will and Testament (LWT) to publish `"offline"` on `{MQTT_TOPIC}/availability` (`airsensor.c:341–345`)
-3. Create and connect the MQTT client — **exits with `EXIT_FAILURE` if connection fails** (`airsensor.c:347–358`)
-4. Publish `"online"` on the availability topic (retained) (`airsensor.c:361–365`)
-5. Parse command-line flags (`-d`, `-v`, `-o`, `-h`) (`airsensor.c:370–393`)
-6. Initialize libusb (`libusb_init()`)
-7. Poll for USB device via `libusb_open_device_with_vid_pid()` (vendor `0x03eb`, product `0x2013`) — up to 10 retries × 11 seconds ≈ 110 seconds
-8. Open device, detach any kernel driver, claim USB interface 0
-9. Register `SIGTERM` and `SIGINT` handlers (`release_usb_device()`) for clean shutdown (`airsensor.c:462–463`)
-10. Flush any pending USB data with an initial interrupt read on endpoint `0x81`
-11. Query device identification via `query_device_id()` — sends `*IDN?` USB command to retrieve serial number and firmware version, stored in `device_serial` and `device_firmware` globals (`airsensor.c:291–314`)
-12. Query device flags via `FLAGGET?` — retrieves warmup time, burn-in period, and other flags (`airsensor.c:533–553`)
-13. Query warn thresholds via `KNOBPRE?` — retrieves warn1 and warn2 VOC thresholds (`airsensor.c:558–578`)
-14. Publish Home Assistant MQTT auto-discovery configs (retained, QoS 1) for up to six entities — VOC, r_h, r_s (measurement sensors with `state_class`, `availability_topic`, `expire_after`, `suggested_display_precision`) and warmup, warn1, warn2 (diagnostic sensors with `entity_category`, `availability_topic`) — all with `object_id` and `origin` block — to `{HA_DISCOVERY_PREFIX}/sensor/{clientid}[_suffix]/config` (`airsensor.c:583–745`)
-15. Publish one-time diagnostic data (warmup, burn_in, warn1, warn2) as retained JSON on `{MQTT_TOPIC}/diag` (`airsensor.c:750–763`)
+1. Parse command-line flags (`-d`, `-v`, `-o`, `-h`)
+2. Read environment variables via `config_init_from_env()`
+3. Call `init_mqtt()`:
+   - Construct the MQTT broker address (`tcp://host:port` or `ssl://host:port`) via `snprintf`
+   - Configure MQTT Last Will and Testament (LWT) to publish `"offline"` on `{MQTT_TOPIC}/availability`
+   - Create and connect the MQTT client — **exits with `EXIT_FAILURE` if connection fails**
+   - Publish `"online"` on the availability topic (retained)
+4. Call `init_usb()`:
+   - Initialize libusb (`libusb_init()`)
+   - Poll for USB device via `libusb_open_device_with_vid_pid()` (vendor `0x03eb`, product `0x2013`) — up to 10 retries × 11 seconds ≈ 110 seconds
+   - Detach any kernel driver, claim USB interface 0
+   - Flush any pending USB data with an initial interrupt read on endpoint `0x81`
+5. Register `SIGTERM` and `SIGINT` handlers for clean shutdown
+6. Call `query_device_info()`:
+   - Query device identification via `query_device_id()` — sends `*IDN?` USB command to retrieve serial number and firmware version, stored in `device_serial` and `device_firmware` globals
+   - Query device flags via `FLAGGET?` — retrieves warmup time, burn-in period, and other flags
+   - Query warn thresholds via `KNOBPRE?` — retrieves warn1 and warn2 VOC thresholds
+7. Publish Home Assistant MQTT auto-discovery configs (retained, QoS 1) for up to six entities — VOC, r_h, r_s (measurement sensors with `state_class`, `availability_topic`, `expire_after`, `suggested_display_precision`) and warmup, warn1, warn2 (diagnostic sensors with `entity_category`, `availability_topic`) — all with `object_id` and `origin` block — to `{HA_DISCOVERY_PREFIX}/sensor/{clientid}[_suffix]/config`
+8. Publish one-time diagnostic data (warmup, burn_in, warn1, warn2) as retained JSON on `{MQTT_TOPIC}/diag`
 
 > Note: MQTT connects **before** the USB device is found. If the USB device is never found or
 > fails to open, the MQTT connection is explicitly disconnected and destroyed before `exit(1)`.
@@ -180,12 +184,12 @@ All configuration is done via environment variables. The code uses null-checked 
 
 ### Shutdown
 
-The `release_usb_device()` signal handler at `airsensor.c:100` handles both `SIGTERM` and `SIGINT` (registered at `airsensor.c:462–463`). It cleanly:
-- Releases USB interface (`usb_release_interface`)
-- Closes USB device handle (`usb_close`)
+The signal handler for `SIGTERM` and `SIGINT` simply sets `shutdown_requested = 1`, which causes the main loop to exit. Cleanup then happens after the loop:
+- Releases USB interface (`libusb_release_interface`)
+- Closes USB device handle (`libusb_close`)
+- Exits libusb (`libusb_exit`)
 - Publishes `"offline"` on the availability topic (retained)
 - Disconnects and destroys the MQTT client (`MQTTClient_disconnect`, `MQTTClient_destroy`)
-- Exits with the USB release return code
 
 ---
 
@@ -239,7 +243,7 @@ Tests exit with code `0` on full pass, `1` if any test fails.
 - **Variables**: snake_case (`print_voc_only`, `one_read`, `iresult`)
 - **Macros**: UPPERCASE (`QOS`, `TIMEOUT`)
 - **No dynamic allocation**: only static/stack buffers (`char buf[1000]`, `char svoc[6]`)
-- Logging via `printout()` (`airsensor.c:54`) with format: `YYYY-MM-DD HH:MM:SS, [label] [value]`
+- Logging uses `LOG_ERROR()`, `LOG_INFO()`, `LOG_DEBUG()` macros from `airsensor.h` that output to stderr with timestamps
 - Raw `printf()` used directly in the main loop for VOC output lines
 
 ### Shared header

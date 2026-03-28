@@ -10,25 +10,22 @@
 
     requirement:
 
-    libusb-1.0 libpaho-mqtt3c libpthread
+    libusb-1.0 libpaho-mqtt3cs libpthread libssl libcrypto
 
     compile:
 
-    gcc -o airsensor airsensor.c -lusb-1.0 -lpaho-mqtt3c -lpthread
+    gcc -o airsensor airsensor.c -lusb-1.0 -lpaho-mqtt3cs -lpthread -lssl -lcrypto
 
 */
 
 #define _GNU_SOURCE
 
-#include <assert.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <libusb-1.0/libusb.h>
 #include <endian.h>
-#include <sys/types.h>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <time.h>
 #include "MQTTClient.h"
@@ -100,7 +97,7 @@ static int query_device_data(libusb_device_handle *handle, const char *reqstr,
  * Reads the response into resp_buf (null-terminated string).
  * Returns 0 on success, -1 on failure.
  */
-int query_device_id(libusb_device_handle *handle, char *resp_buf, size_t resp_size, int timeout_ms) {
+static int query_device_id(libusb_device_handle *handle, char *resp_buf, size_t resp_size, int timeout_ms) {
     static unsigned short idn_seq = 1;
     char cmd[17];
     snprintf(cmd, sizeof(cmd), "@%04X*IDN?\n@@@@@", idn_seq);
@@ -147,8 +144,12 @@ static void publish_discovery(MQTTClient client_handle,
                               const char *origin_block,
                               const discovery_entity_t *ent) {
     char topic[256];
-    snprintf(topic, sizeof(topic), "%s/sensor/%s%s/config",
-             cfg->ha_prefix, cfg->clientid, ent->suffix);
+    if (ent->suffix)
+        snprintf(topic, sizeof(topic), "%s/sensor/%s%s/config",
+                 cfg->ha_prefix, cfg->clientid, ent->suffix);
+    else
+        snprintf(topic, sizeof(topic), "%s/sensor/%s/config",
+                 cfg->ha_prefix, cfg->clientid);
 
     char payload[1536];
     int pos = 0;
@@ -159,7 +160,7 @@ static void publish_discovery(MQTTClient client_handle,
                     "\"value_template\":\"%s\","
                     "\"unit_of_measurement\":\"%s\",",
                     cfg->ha_device_name, ent->name,
-                    cfg->clientid, ent->suffix + 1,  /* skip leading _ */
+                    cfg->clientid, ent->suffix ? ent->suffix + 1 : "",
                     ent->state_topic, ent->value_tpl, ent->unit);
 
     if (ent->device_class)
@@ -185,7 +186,7 @@ static void publish_discovery(MQTTClient client_handle,
                     "\"unique_id\":\"%s%s\","
                     "\"availability_topic\":\"%s\","
                     "%s,%s}",
-                    cfg->clientid, ent->suffix,
+                    cfg->clientid, ent->suffix ? ent->suffix : "_voc",
                     ent->avail_topic, device_block, origin_block);
 
     MQTTClient_message disc_msg = MQTTClient_message_initializer;
@@ -457,7 +458,7 @@ int main(int argc, char *argv[])
 
     // VOC discovery
     discovery_entity_t voc_ent = {
-        .suffix = "_voc", .name = "VOC",
+        .suffix = NULL, .name = "VOC",
         .value_tpl = "{{ value_json.voc }}", .unit = "ppm",
         .device_class = "volatile_organic_compounds_parts",
         .state_class = "measurement", .entity_cat = NULL, .icon = NULL,
@@ -676,7 +677,7 @@ int main(int argc, char *argv[])
 
         LOG_DEBUG("Return code from USB flush read: %d", ret);
 
-        if ( voc >= 450 && voc <= 15001) {
+        if (voc_in_range(voc)) {
             if (cfg.print_voc_only == 1) {
                 printf("%d\n", voc);
             } else {
@@ -694,10 +695,9 @@ int main(int argc, char *argv[])
             pubmsg.qos = QOS;
             pubmsg.retained = 0;
             MQTTClient_publishMessage(client, cfg.topic, &pubmsg, &token);
-            printf("Waiting for up to %d seconds for publication of %s\non topic %s for client with ClientID: %s\n",
-               (int)(TIMEOUT/1000), (char*)pubmsg.payload, cfg.topic, cfg.clientid);
+            LOG_DEBUG("Publishing %s on topic %s", (char*)pubmsg.payload, cfg.topic);
             rc = MQTTClient_waitForCompletion(client, token, TIMEOUT);
-            printf("Message with delivery token %d delivered\n", token);
+            LOG_DEBUG("Message with delivery token %d delivered", token);
 
         } else {
             if (cfg.print_voc_only == 1) {
