@@ -251,7 +251,11 @@ static libusb_device_handle* init_usb(int vendor, int product, int usb_timeout) 
     int ret;
 
     LOG_DEBUG("Init USB");
-    libusb_init(NULL);
+    ret = libusb_init(NULL);
+    if (ret < 0) {
+        LOG_ERROR("libusb_init failed: %s", libusb_error_name(ret));
+        return NULL;
+    }
 
     libusb_device_handle *handle = NULL;
     int counter = 0;
@@ -408,6 +412,11 @@ int main(int argc, char *argv[])
     int expire_after = cfg.poll_interval * 3;
 
     devh = init_usb(0x03eb, 0x2013, cfg.usb_timeout);
+    if (!devh) {
+        MQTTClient_disconnect(client, 10000);
+        MQTTClient_destroy(&client);
+        exit(1);
+    }
 
     device_flags_t dev_flags;
     int flags_valid;
