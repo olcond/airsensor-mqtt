@@ -1,6 +1,6 @@
 CC      = gcc
 CFLAGS  = -Wall -Wextra -std=c11
-LDFLAGS = -lusb -lpaho-mqtt3c -lpthread
+LDFLAGS = -lusb-1.0 -lpaho-mqtt3cs -lpthread -lssl -lcrypto
 
 BIN     = airsensor
 TEST    = tests/test_airsensor
@@ -9,10 +9,10 @@ TEST    = tests/test_airsensor
 
 all: $(BIN)
 
-$(BIN): airsensor.c
+$(BIN): airsensor.c airsensor.h
 	$(CC) $(CFLAGS) -o $(BIN) airsensor.c $(LDFLAGS)
 
-$(TEST): tests/test_airsensor.c
+$(TEST): tests/test_airsensor.c airsensor.h
 	$(CC) $(CFLAGS) -o $(TEST) tests/test_airsensor.c
 
 test: $(TEST)

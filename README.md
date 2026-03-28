@@ -25,7 +25,7 @@ Bus 00x Device 00x: ID 03eb:2013 Atmel Corp.
 ## Schnellstart mit Docker
 
 ```bash
-docker run --rm --device=/dev/bus/usb \
+docker run --rm --privileged --device=/dev/bus/usb -v /sys:/sys:ro \
   -e MQTT_BROKERNAME=192.168.1.10 \
   -e MQTT_PORT=1883 \
   -e MQTT_CLIENTID=airsensor \
@@ -64,20 +64,21 @@ docker build -t airsensor-mqtt .
 #### Voraussetzungen
 
 - GCC-Compiler
-- libusb (0.1) Entwicklungsbibliothek
-- Paho MQTT C Client Entwicklungsbibliothek
+- libusb 1.0 Entwicklungsbibliothek
+- Paho MQTT C Client Entwicklungsbibliothek (TLS-faehig)
+- OpenSSL Entwicklungsbibliothek
 - pthread
 
 Unter Debian/Ubuntu:
 
 ```bash
-sudo apt-get install gcc libusb-dev libpaho-mqtt-dev
+sudo apt-get install gcc libusb-1.0-0-dev libpaho-mqtt-dev libssl-dev
 ```
 
 #### Kompilieren
 
 ```bash
-gcc -o airsensor airsensor.c -lusb -lpaho-mqtt3c -lpthread
+gcc -o airsensor airsensor.c -lusb-1.0 -lpaho-mqtt3cs -lpthread -lssl -lcrypto
 ```
 
 ## Konfiguration
@@ -97,6 +98,7 @@ Die gesamte MQTT-Konfiguration erfolgt ueber Umgebungsvariablen. Alle Variablen 
 | `POLL_INTERVAL` | Messintervall in Sekunden (10--3600) | `30` |
 | `USB_TIMEOUT` | USB-Timeout in Millisekunden (250--10000) | `1000` |
 | `MAX_RETRIES` | Maximale USB-Fehler vor Reconnect (1--20) | `3` |
+| `MQTT_TLS` | TLS-Verschluesselung aktivieren (`1` oder `true`) | _(deaktiviert)_ |
 
 ## Benutzung
 
@@ -132,11 +134,23 @@ Die gesamte MQTT-Konfiguration erfolgt ueber Umgebungsvariablen. Alle Variablen 
 **Docker mit Authentifizierung:**
 
 ```bash
-docker run --rm --device=/dev/bus/usb \
+docker run --rm --privileged --device=/dev/bus/usb -v /sys:/sys:ro \
   -e MQTT_BROKERNAME=mqtt.example.com \
   -e MQTT_PORT=1883 \
   -e MQTT_CLIENTID=wohnzimmer-sensor \
   -e MQTT_TOPIC=wohnung/wohnzimmer/luftqualitaet \
+  -e MQTT_USERNAME=mqttuser \
+  -e MQTT_PASSWORD=geheim \
+  volschin/airsensor
+```
+
+**Docker mit TLS-Verschluesselung:**
+
+```bash
+docker run --rm --privileged --device=/dev/bus/usb -v /sys:/sys:ro \
+  -e MQTT_BROKERNAME=mqtt.example.com \
+  -e MQTT_PORT=8883 \
+  -e MQTT_TLS=1 \
   -e MQTT_USERNAME=mqttuser \
   -e MQTT_PASSWORD=geheim \
   volschin/airsensor
@@ -150,8 +164,11 @@ services:
     image: volschin/airsensor:latest
     container_name: airsensor
     restart: unless-stopped
+    privileged: true
     devices:
       - /dev/bus/usb:/dev/bus/usb
+    volumes:
+      - /sys:/sys:ro
     environment:
       MQTT_BROKERNAME: "192.168.1.10"
       MQTT_PORT: "1883"
@@ -164,7 +181,7 @@ services:
       POLL_INTERVAL: "30"
 ```
 
-> **Hinweis:** Der Container benoetigt Zugriff auf den USB-Bus (`/dev/bus/usb`). Alternativ kann auch nur das spezifische USB-Geraet durchgereicht werden, z.B. `/dev/bus/usb/001/005`.
+> **Hinweis:** Der Container benoetigt `privileged: true` und Zugriff auf `/sys` (read-only), da libusb 1.0 sowohl die USB-Devicenodes als auch sysfs fuer die Geraeteerkennung benoetigt.
 
 ## Messwerte
 
@@ -317,7 +334,7 @@ Die VOC-Discovery-Konfiguration sieht beispielsweise so aus:
 Der Geraetenamen und das Discovery-Praefix koennen ueber Umgebungsvariablen angepasst werden:
 
 ```bash
-docker run --rm --device=/dev/bus/usb \
+docker run --rm --privileged --device=/dev/bus/usb -v /sys:/sys:ro \
   -e MQTT_BROKERNAME=192.168.1.10 \
   -e MQTT_TOPIC=home/CO2/voc \
   -e HA_DEVICE_NAME="Wohnzimmer Sensor" \
@@ -413,7 +430,7 @@ Alle Umgebungsvariablen haben Standardwerte und sind optional. Falls dennoch ein
 
 ### Projektstruktur
 
-Das gesamte Programm besteht aus einer einzigen Quelldatei (`airsensor.c`, ~950 Zeilen). Unit-Tests (181 Assertions) befinden sich in `tests/test_airsensor.c` und koennen ohne Hardware ausgefuehrt werden (`make test`).
+Die Anwendung besteht aus `airsensor.c` (Hauptprogramm) und `airsensor.h` (gemeinsame Typen, reine Logikfunktionen und Makros). Unit-Tests (193 Assertions) befinden sich in `tests/test_airsensor.c` und koennen ohne Hardware ausgefuehrt werden (`make test`).
 
 ### Kompilieren und testen
 

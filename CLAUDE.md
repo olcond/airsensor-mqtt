@@ -4,7 +4,7 @@
 
 **airsensor-mqtt** is a Linux USB device driver and MQTT publisher written in C. It reads VOC (Volatile Organic Compound) air quality measurements from a USB air sensor (Atmel 0x03eb:0x2013 — sold under brands like Conrad and REHAU) and publishes the readings to an MQTT broker for home automation integration.
 
-- **Language**: C (single-file application, ~950 lines)
+- **Language**: C (C application with shared header)
 - **License**: MIT
 - **Primary deployment**: Docker container (multi-arch: amd64, arm/v7, arm64)
 - **Maintainer**: Veit Olschinski (volschin@googlemail.com)
@@ -17,7 +17,8 @@
 
 ```
 airsensor-mqtt/
-├── airsensor.c                        # Entire application (~950 lines)
+├── airsensor.c                        # Application entry point, USB/MQTT I/O
+├── airsensor.h                        # Pure-logic functions, types, macros (shared with tests)
 ├── Makefile                           # Build and test targets
 ├── Dockerfile                         # Multi-stage build (builder + scratch runtime)
 ├── .pre-commit-config.yaml            # Git hooks: gitleaks, cpplint, whitespace
@@ -45,8 +46,8 @@ docker build -t airsensor-mqtt .
 ```
 
 The Dockerfile uses a two-stage build:
-1. **builder** — `gcc:15.2` (pinned by digest) with `libusb-dev` and `libpaho-mqtt-dev` installed
-2. **runtime** — `scratch` image with only the statically linked binary
+1. **builder** — `gcc:15.2` (pinned by digest) with `libusb-1.0-0-dev`, `libpaho-mqtt-dev`, and `libssl-dev` installed
+2. **runtime** — `debian:trixie-slim` with runtime libraries (libusb, paho-mqtt, CA certificates)
 
 The default Docker entrypoint runs with the `-v` flag (VOC-only output mode):
 ```dockerfile
@@ -55,7 +56,7 @@ ENTRYPOINT ["/airsensor", "-v"]
 
 Compilation command (inside builder stage):
 ```bash
-gcc -static -o airsensor airsensor.c -lusb -lpaho-mqtt3c -lpthread
+gcc -o airsensor airsensor.c -lusb-1.0 -lpaho-mqtt3cs -lpthread -lssl -lcrypto
 ```
 
 ### Local build via Makefile
@@ -70,13 +71,13 @@ The Makefile compiles with `-Wall -Wextra -std=c11`. The test binary does **not*
 
 ### Local build (manual)
 
-Requires `libusb-dev` and `libpaho-mqtt-dev`:
+Requires `libusb-1.0-0-dev`, `libpaho-mqtt-dev`, and `libssl-dev`:
 
 ```bash
-gcc -o airsensor airsensor.c -lusb -lpaho-mqtt3c -lpthread
+gcc -o airsensor airsensor.c -lusb-1.0 -lpaho-mqtt3cs -lpthread -lssl -lcrypto
 ```
 
-Note: The Dockerfile uses `-static` for a self-contained binary; omit for local builds.
+Note: The Dockerfile uses dynamic linking; the runtime stage installs the required shared libraries.
 
 ---
 
@@ -96,7 +97,7 @@ Note: The Dockerfile uses `-static` for a self-contained binary; omit for local 
 ### Docker run example
 
 ```bash
-docker run --rm --device=/dev/bus/usb \
+docker run --rm --privileged --device=/dev/bus/usb -v /sys:/sys:ro \
   -e MQTT_BROKERNAME=192.168.1.10 \
   -e MQTT_PORT=1883 \
   -e MQTT_TOPIC=home/CO2/voc \
@@ -107,7 +108,7 @@ docker run --rm --device=/dev/bus/usb \
 
 ## Environment Variables
 
-All configuration is done via environment variables. The code uses null-checked `getenv()` with compiled-in defaults (`airsensor.c:318–332`), so missing variables fall back to the defaults listed below rather than segfaulting. Integer variables use `parse_env_int()` with bounds clamping.
+All configuration is done via environment variables. The code uses null-checked `getenv()` with compiled-in defaults, so missing variables fall back to the defaults listed below rather than segfaulting. Integer variables use `parse_env_int()` with bounds clamping.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -117,13 +118,16 @@ All configuration is done via environment variables. The code uses null-checked 
 | `MQTT_TOPIC` | `home/CO2/voc` | Topic to publish sensor data (JSON) |
 | `MQTT_USERNAME` | _(none)_ | Optional authentication username |
 | `MQTT_PASSWORD` | _(none)_ | Optional authentication password |
+| `MQTT_TLS` | _(disabled)_ | Enable TLS encryption (`1` or `true` to use `ssl://`) |
 | `HA_DISCOVERY_PREFIX` | `homeassistant` | Home Assistant MQTT discovery topic prefix |
 | `HA_DEVICE_NAME` | `Air Sensor` | Device name shown in Home Assistant |
 | `POLL_INTERVAL` | `30` | Sensor poll interval in seconds (10–3600) |
 | `USB_TIMEOUT` | `1000` | USB read/write timeout in milliseconds (250–10000) |
 | `MAX_RETRIES` | `3` | Max consecutive USB failures before reconnect (1–20) |
 
-`MQTT_USERNAME` and `MQTT_PASSWORD` are passed directly to `conn_opts` via `getenv()` (`airsensor.c:351–352`); they return `NULL` if unset, which the Paho library treats as "no authentication".
+`MQTT_USERNAME` and `MQTT_PASSWORD` are passed directly to `conn_opts` via `getenv()`; they return `NULL` if unset, which the Paho library treats as "no authentication".
+
+`MQTT_TLS` controls the connection protocol: when set to `1` or `true`, the client connects via `ssl://` instead of `tcp://` and enables server certificate authentication.
 
 `HA_DISCOVERY_PREFIX` and `HA_DEVICE_NAME` control the auto-discovery messages published on startup.
 
@@ -133,21 +137,25 @@ All configuration is done via environment variables. The code uses null-checked 
 
 ### Actual startup sequence (as coded)
 
-1. Read environment variables and construct the MQTT broker address (`tcp://host:port`) via `snprintf` (`airsensor.c:333–335`)
-2. Configure MQTT Last Will and Testament (LWT) to publish `"offline"` on `{MQTT_TOPIC}/availability` (`airsensor.c:341–345`)
-3. Create and connect the MQTT client — **exits with `EXIT_FAILURE` if connection fails** (`airsensor.c:347–358`)
-4. Publish `"online"` on the availability topic (retained) (`airsensor.c:361–365`)
-5. Parse command-line flags (`-d`, `-v`, `-o`, `-h`) (`airsensor.c:370–393`)
-6. Initialize libusb (`usb_init()`)
-7. Poll for USB device (vendor `0x03eb`, product `0x2013`) — up to 10 retries × 11 seconds ≈ 110 seconds
-8. Open device, detach any kernel driver, claim USB interface 0
-9. Register `SIGTERM` and `SIGINT` handlers (`release_usb_device()`) for clean shutdown (`airsensor.c:462–463`)
-10. Flush any pending USB data with an initial interrupt read on endpoint `0x81`
-11. Query device identification via `query_device_id()` — sends `*IDN?` USB command to retrieve serial number and firmware version, stored in `device_serial` and `device_firmware` globals (`airsensor.c:291–314`)
-12. Query device flags via `FLAGGET?` — retrieves warmup time, burn-in period, and other flags (`airsensor.c:533–553`)
-13. Query warn thresholds via `KNOBPRE?` — retrieves warn1 and warn2 VOC thresholds (`airsensor.c:558–578`)
-14. Publish Home Assistant MQTT auto-discovery configs (retained, QoS 1) for up to six entities — VOC, r_h, r_s (measurement sensors with `state_class`, `availability_topic`, `expire_after`, `suggested_display_precision`) and warmup, warn1, warn2 (diagnostic sensors with `entity_category`, `availability_topic`) — all with `object_id` and `origin` block — to `{HA_DISCOVERY_PREFIX}/sensor/{clientid}[_suffix]/config` (`airsensor.c:583–745`)
-15. Publish one-time diagnostic data (warmup, burn_in, warn1, warn2) as retained JSON on `{MQTT_TOPIC}/diag` (`airsensor.c:750–763`)
+1. Parse command-line flags (`-d`, `-v`, `-o`, `-h`)
+2. Read environment variables via `config_init_from_env()`
+3. Call `init_mqtt()`:
+   - Construct the MQTT broker address (`tcp://host:port` or `ssl://host:port`) via `snprintf`
+   - Configure MQTT Last Will and Testament (LWT) to publish `"offline"` on `{MQTT_TOPIC}/availability`
+   - Create and connect the MQTT client — **exits with `EXIT_FAILURE` if connection fails**
+   - Publish `"online"` on the availability topic (retained)
+4. Call `init_usb()`:
+   - Initialize libusb (`libusb_init()`)
+   - Poll for USB device via `libusb_open_device_with_vid_pid()` (vendor `0x03eb`, product `0x2013`) — up to 10 retries × 11 seconds ≈ 110 seconds
+   - Detach any kernel driver, claim USB interface 0
+   - Flush any pending USB data with an initial interrupt read on endpoint `0x81`
+5. Register `SIGTERM` and `SIGINT` handlers for clean shutdown
+6. Call `query_device_info()`:
+   - Query device identification via `query_device_id()` — sends `*IDN?` USB command to retrieve serial number and firmware version, stored in `device_serial` and `device_firmware` globals
+   - Query device flags via `FLAGGET?` — retrieves warmup time, burn-in period, and other flags
+   - Query warn thresholds via `KNOBPRE?` — retrieves warn1 and warn2 VOC thresholds
+7. Publish Home Assistant MQTT auto-discovery configs (retained, QoS 1) for up to six entities — VOC, r_h, r_s (measurement sensors with `state_class`, `availability_topic`, `expire_after`, `suggested_display_precision`) and warmup, warn1, warn2 (diagnostic sensors with `entity_category`, `availability_topic`) — all with `object_id` and `origin` block — to `{HA_DISCOVERY_PREFIX}/sensor/{clientid}[_suffix]/config`
+8. Publish one-time diagnostic data (warmup, burn_in, warn1, warn2) as retained JSON on `{MQTT_TOPIC}/diag`
 
 > Note: MQTT connects **before** the USB device is found. If the USB device is never found or
 > fails to open, the MQTT connection is explicitly disconnected and destroyed before `exit(1)`.
@@ -176,12 +184,12 @@ All configuration is done via environment variables. The code uses null-checked 
 
 ### Shutdown
 
-The `release_usb_device()` signal handler at `airsensor.c:100` handles both `SIGTERM` and `SIGINT` (registered at `airsensor.c:462–463`). It cleanly:
-- Releases USB interface (`usb_release_interface`)
-- Closes USB device handle (`usb_close`)
+The signal handler for `SIGTERM` and `SIGINT` simply sets `shutdown_requested = 1`, which causes the main loop to exit. Cleanup then happens after the loop:
+- Releases USB interface (`libusb_release_interface`)
+- Closes USB device handle (`libusb_close`)
+- Exits libusb (`libusb_exit`)
 - Publishes `"offline"` on the availability topic (retained)
 - Disconnects and destroys the MQTT client (`MQTTClient_disconnect`, `MQTTClient_destroy`)
-- Exits with the USB release return code
 
 ---
 
@@ -191,7 +199,7 @@ The `release_usb_device()` signal handler at `airsensor.c:100` handles both `SIG
 
 The test file replicates the self-contained logic from `airsensor.c` without requiring USB hardware or an MQTT broker. It uses a minimal custom test runner (no external framework).
 
-**Test suites (181 assertions):**
+**Test suites (193 assertions):**
 
 | Suite | What it tests |
 |-------|--------------|
@@ -235,8 +243,20 @@ Tests exit with code `0` on full pass, `1` if any test fails.
 - **Variables**: snake_case (`print_voc_only`, `one_read`, `iresult`)
 - **Macros**: UPPERCASE (`QOS`, `TIMEOUT`)
 - **No dynamic allocation**: only static/stack buffers (`char buf[1000]`, `char svoc[6]`)
-- Logging via `printout()` (`airsensor.c:54`) with format: `YYYY-MM-DD HH:MM:SS, [label] [value]`
+- Logging uses `LOG_ERROR()`, `LOG_INFO()`, `LOG_DEBUG()` macros from `airsensor.h` that output to stderr with timestamps
 - Raw `printf()` used directly in the main loop for VOC output lines
+
+### Shared header
+
+Pure-logic functions and types live in `airsensor.h` (declared `static inline`). Both `airsensor.c` and `tests/test_airsensor.c` include it.
+
+### Logging
+
+`LOG_ERROR()`, `LOG_INFO()`, `LOG_DEBUG()` macros in `airsensor.h` output to stderr with timestamps. Controlled by `log_level` (set via `-d` flag).
+
+### Configuration
+
+`config_t` struct initialized via `config_init_from_env()` in `airsensor.h`.
 
 ### Error handling
 
@@ -251,15 +271,14 @@ Tests exit with code `0` on full pass, `1` if any test fails.
 
 ### USB API
 
-The code uses the older **libusb 0.1** API (`usb_*` functions from `<usb.h>`), not the modern
-libusb 1.0 (`libusb_*`) API. Keep this in mind when editing USB-related code.
+The code uses the **libusb 1.0** API (`libusb_*` functions from `<libusb-1.0/libusb.h>`).
 
 Key USB calls used:
-- `usb_init()`, `usb_find_busses()`, `usb_find_devices()`, `usb_get_busses()`
-- `usb_open()`, `usb_close()`
-- `usb_get_driver_np()`, `usb_detach_kernel_driver_np()`
-- `usb_claim_interface()`, `usb_release_interface()`
-- `usb_interrupt_read()`, `usb_interrupt_write()`
+- `libusb_init()`, `libusb_open_device_with_vid_pid()`
+- `libusb_close()`, `libusb_exit()`
+- `libusb_kernel_driver_active()`, `libusb_detach_kernel_driver()`
+- `libusb_claim_interface()`, `libusb_release_interface()`
+- `libusb_interrupt_transfer()`
 
 ### MQTT library
 
@@ -268,6 +287,8 @@ Uses the **Paho MQTT C client** synchronous API (`MQTTClient`, not `MQTTAsync`):
 - QoS level 1, `keepAliveInterval = 70` seconds
 - `MQTTClient_publishMessage()` + `MQTTClient_waitForCompletion()` with 10-second timeout
 - Last Will and Testament (LWT) configured via `MQTTClient_willOptions` for availability signaling
+
+When `MQTT_TLS=1`, the client links against `libpaho-mqtt3cs` (TLS-enabled synchronous client) and configures `MQTTClient_SSLOptions` with server certificate authentication.
 
 ---
 
@@ -354,7 +375,7 @@ PRs to update:
 ```c
 #define QOS         1         // MQTT QoS level
 #define TIMEOUT     10000L    // MQTT operation timeout (ms)
-#define APP_VERSION "0.10.0"  // Used in HA discovery origin block
+#define APP_VERSION "0.11.0"  // Used in HA discovery origin block
 
 // USB device identifiers
 vendor  = 0x03eb  // Atmel
@@ -388,15 +409,18 @@ max_wait         = ~110 seconds
 
 ## Making Changes
 
-1. `airsensor.c` is the **only source file** — all logic lives here
+1. `airsensor.c` is the main source file; `airsensor.h` contains shared pure-logic functions
 2. Unit tests live in `tests/test_airsensor.c` and test pure logic only (no hardware required)
 3. Run tests: `make test`
 4. Test full compilation with Docker: `docker build -t airsensor-mqtt .`
-5. For local builds: ensure `libusb-dev` and `libpaho-mqtt-dev` are installed
+5. For local builds: ensure `libusb-1.0-0-dev`, `libpaho-mqtt-dev`, and `libssl-dev` are installed
 6. Ensure pre-commit hooks pass: `pre-commit run --all-files`
-7. Commit and push to trigger CI (unit tests fire on `airsensor.c`/`tests/`/`Makefile` changes;
+7. **Before merging or completing a feature branch**, always perform:
+   - **Code review**: Run a thorough review of all changes (bugs, security, consistency, dead code, documentation accuracy)
+   - **E2E test**: Start a mosquitto broker in Docker, run the airsensor container with the USB sensor connected (`--privileged --device=/dev/bus/usb -v /sys:/sys:ro`), and verify that MQTT messages (discovery, availability, VOC data, diagnostics) are correctly published
+8. Commit and push to trigger CI (unit tests fire on `airsensor.c`/`tests/`/`Makefile` changes;
    Docker build fires on `Dockerfile`/`airsensor.c` changes)
-8. Tag a release (`git tag vX.Y.Z && git push --tags`) to trigger a versioned Docker Hub push
+9. Tag a release (`git tag vX.Y.Z && git push --tags`) to trigger a versioned Docker Hub push
 
 ---
 
