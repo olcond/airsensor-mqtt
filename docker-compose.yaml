@@ -1,6 +1,6 @@
 services:
   airsensor:
-    image: volschin/airsensor:latest
+    image: ghcr.io/olcond/airsensor:latest
     container_name: airsensor
     restart: unless-stopped
     privileged: true

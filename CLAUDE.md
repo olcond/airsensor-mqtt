@@ -8,7 +8,7 @@
 - **License**: MIT
 - **Primary deployment**: Docker container (multi-arch: amd64, arm/v7, arm64)
 - **Maintainer**: Veit Olschinski (volschin@googlemail.com)
-- **Docker Hub image**: `volschin/airsensor` (not `airsensor-mqtt`)
+- **Container image**: `ghcr.io/olcond/airsensor` (GitHub Container Registry)
 - **Original authors**: Rodric Yates, Ap15e (MiOS), Sebastian Sjoholm
 
 ---
@@ -30,7 +30,7 @@ airsensor-mqtt/
 └── .github/
     ├── renovate.json5                 # Renovate dependency update bot config
     └── workflows/
-        ├── docker-image.yml           # Docker Hub CI/CD (multi-arch builds)
+        ├── docker-image.yml           # GitHub Container Registry CI/CD (multi-arch builds)
         ├── test.yml                   # Unit test CI (runs on ubuntu-latest)
         └── dependency-review.yml      # Vulnerability scanning on PRs
 ```
@@ -101,7 +101,7 @@ docker run --rm --privileged --device=/dev/bus/usb -v /sys:/sys:ro \
   -e MQTT_BROKERNAME=192.168.1.10 \
   -e MQTT_PORT=1883 \
   -e MQTT_TOPIC=home/CO2/voc \
-  volschin/airsensor
+  ghcr.io/olcond/airsensor
 ```
 
 ---
@@ -346,11 +346,10 @@ pre-commit run --all-files
 - **Triggers**: push to `main` (only when `Dockerfile` or `airsensor.c` changes), any git tag,
   scheduled monthly on the 28th at midnight UTC
 - **Builds for**: `linux/amd64`, `linux/arm/v7`, `linux/arm64`
-- **Publishes to**: Docker Hub as `volschin/airsensor` (credentials via `DOCKER_USERNAME` /
-  `DOCKER_PASSWORD` repository secrets)
-- **Tags**:
-  - `volschin/airsensor:latest` for pushes to `main`
-  - `volschin/airsensor:{version}` for git tags
+- **Publishes to**: GitHub Container Registry as `ghcr.io/olcond/airsensor` (via `GITHUB_TOKEN`)
+- **Tags** (via `docker/metadata-action`):
+  - `ghcr.io/olcond/airsensor:latest` for pushes to `main`
+  - `ghcr.io/olcond/airsensor:{version}` and `{major}.{minor}` for semver git tags
 - **Security**: All GitHub Actions are pinned to full commit SHAs (not just version tags) for
   supply-chain security. Uses `step-security/harden-runner` with `egress-policy: audit`.
 
@@ -375,7 +374,7 @@ PRs to update:
 ```c
 #define QOS         1         // MQTT QoS level
 #define TIMEOUT     10000L    // MQTT operation timeout (ms)
-#define APP_VERSION "1.0.0"  // Used in HA discovery origin block
+#define APP_VERSION "1.0.3"  // Used in HA discovery origin block
 
 // USB device identifiers
 vendor  = 0x03eb  // Atmel
@@ -420,7 +419,7 @@ max_wait         = ~110 seconds
    - **E2E test**: Start a mosquitto broker in Docker, run the airsensor container with the USB sensor connected (`--privileged --device=/dev/bus/usb -v /sys:/sys:ro`), and verify that MQTT messages (discovery, availability, VOC data, diagnostics) are correctly published
 8. Commit and push to trigger CI (unit tests fire on `airsensor.c`/`tests/`/`Makefile` changes;
    Docker build fires on `Dockerfile`/`airsensor.c` changes)
-9. Tag a release (`git tag vX.Y.Z && git push --tags`) to trigger a versioned Docker Hub push
+9. Tag a release (`git tag vX.Y.Z && git push --tags`) to trigger a versioned ghcr.io push
 
 ---
 
@@ -435,5 +434,6 @@ For reference when reviewing or updating workflows:
 | `docker/setup-qemu-action` | v3.7.0 | `c7c53464625b32c7a7e944ae62b3e17d2b600130` |
 | `docker/setup-buildx-action` | v3.12.0 | `8d2750c68a42422c14e847fe6c8ac0403b4cbd6f` |
 | `docker/login-action` | v3.6.0 | `5e57cd118135c172c3672efd75eb46360885c0ef` |
+| `docker/metadata-action` | v5.7.0 | `902fa8ec7d6ecbf8d84d538b9b233a880e428804` |
 | `docker/build-push-action` | v6.18.0 | `263435318d21b8e681c14492fe198d362a7d2c83` |
 | `actions/dependency-review-action` | v4.8.2 | `3c4e3dcb1aa7874d2c16be7d79418e9b7efd6261` |

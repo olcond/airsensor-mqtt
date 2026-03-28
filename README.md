@@ -30,7 +30,7 @@ docker run --rm --privileged --device=/dev/bus/usb -v /sys:/sys:ro \
   -e MQTT_PORT=1883 \
   -e MQTT_CLIENTID=airsensor \
   -e MQTT_TOPIC=home/CO2/voc \
-  volschin/airsensor
+  ghcr.io/olcond/airsensor
 ```
 
 Das Docker-Image ist als Multi-Arch-Build fuer folgende Plattformen verfuegbar:
@@ -45,10 +45,10 @@ Das Docker-Image ist als Multi-Arch-Build fuer folgende Plattformen verfuegbar:
 
 ### Variante 1: Docker (empfohlen)
 
-Docker-Image von Docker Hub:
+Docker-Image von GitHub Container Registry:
 
 ```bash
-docker pull volschin/airsensor:latest
+docker pull ghcr.io/olcond/airsensor:latest
 ```
 
 Oder lokal bauen:
@@ -141,7 +141,7 @@ docker run --rm --privileged --device=/dev/bus/usb -v /sys:/sys:ro \
   -e MQTT_TOPIC=wohnung/wohnzimmer/luftqualitaet \
   -e MQTT_USERNAME=mqttuser \
   -e MQTT_PASSWORD=geheim \
-  volschin/airsensor
+  ghcr.io/olcond/airsensor
 ```
 
 **Docker mit TLS-Verschluesselung:**
@@ -153,7 +153,7 @@ docker run --rm --privileged --device=/dev/bus/usb -v /sys:/sys:ro \
   -e MQTT_TLS=1 \
   -e MQTT_USERNAME=mqttuser \
   -e MQTT_PASSWORD=geheim \
-  volschin/airsensor
+  ghcr.io/olcond/airsensor
 ```
 
 ## Docker Compose
@@ -161,7 +161,7 @@ docker run --rm --privileged --device=/dev/bus/usb -v /sys:/sys:ro \
 ```yaml
 services:
   airsensor:
-    image: volschin/airsensor:latest
+    image: ghcr.io/olcond/airsensor:latest
     container_name: airsensor
     restart: unless-stopped
     privileged: true
@@ -338,7 +338,7 @@ docker run --rm --privileged --device=/dev/bus/usb -v /sys:/sys:ro \
   -e MQTT_BROKERNAME=192.168.1.10 \
   -e MQTT_TOPIC=home/CO2/voc \
   -e HA_DEVICE_NAME="Wohnzimmer Sensor" \
-  volschin/airsensor
+  ghcr.io/olcond/airsensor
 ```
 
 #### Manuelle Konfiguration
@@ -448,7 +448,7 @@ pre-commit run --all-files
 
 ### CI/CD
 
-- **Docker Hub:** Automatischer Build und Push bei Aenderungen an `Dockerfile` oder `airsensor.c` auf dem `main`-Branch
+- **GitHub Container Registry:** Automatischer Build und Push bei Aenderungen an `Dockerfile` oder `airsensor.c` auf dem `main`-Branch
 - **Monatlicher Rebuild:** Am 28. jedes Monats (Sicherheitsupdates der Basis-Images)
 - **Versionierte Releases:** Git-Tags (`vX.Y.Z`) erzeugen ein entsprechendes Docker-Image-Tag
 
