@@ -42,7 +42,7 @@ int log_level = LOG_LEVEL_INFO;
 MQTTClient client;
 libusb_device_handle *devh;
 char device_serial[20] = "";
-char device_firmware[20] = "";
+char device_firmware[32] = "";
 char device_manufacturer[64] = "";
 char device_product[64] = "";
 char g_avail_topic[256] = "";
@@ -200,7 +200,8 @@ static void publish_discovery(MQTTClient client_handle,
 
 static int init_mqtt(const config_t *cfg, char *avail_topic, size_t avail_size) {
     char address[256];
-    snprintf(address, sizeof(address), "tcp://%s:%s", cfg->broker, cfg->port);
+    const char *proto = cfg->tls ? "ssl" : "tcp";
+    snprintf(address, sizeof(address), "%s://%s:%s", proto, cfg->broker, cfg->port);
 
     snprintf(avail_topic, avail_size, "%s/availability", cfg->topic);
     snprintf(g_avail_topic, sizeof(g_avail_topic), "%s", avail_topic);
@@ -220,6 +221,12 @@ static int init_mqtt(const config_t *cfg, char *avail_topic, size_t avail_size) 
     will_opts.qos = QOS;
     will_opts.retained = 1;
     conn_opts.will = &will_opts;
+
+    MQTTClient_SSLOptions ssl_opts = MQTTClient_SSLOptions_initializer;
+    if (cfg->tls) {
+        ssl_opts.enableServerCertAuth = 1;
+        conn_opts.ssl = &ssl_opts;
+    }
 
     int rc = MQTTClient_connect(client, &conn_opts);
     if (rc != MQTTCLIENT_SUCCESS) {
