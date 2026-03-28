@@ -415,9 +415,12 @@ max_wait         = ~110 seconds
 4. Test full compilation with Docker: `docker build -t airsensor-mqtt .`
 5. For local builds: ensure `libusb-1.0-0-dev`, `libpaho-mqtt-dev`, and `libssl-dev` are installed
 6. Ensure pre-commit hooks pass: `pre-commit run --all-files`
-7. Commit and push to trigger CI (unit tests fire on `airsensor.c`/`tests/`/`Makefile` changes;
+7. **Before merging or completing a feature branch**, always perform:
+   - **Code review**: Run a thorough review of all changes (bugs, security, consistency, dead code, documentation accuracy)
+   - **E2E test**: Start a mosquitto broker in Docker, run the airsensor container with the USB sensor connected (`--privileged --device=/dev/bus/usb -v /sys:/sys:ro`), and verify that MQTT messages (discovery, availability, VOC data, diagnostics) are correctly published
+8. Commit and push to trigger CI (unit tests fire on `airsensor.c`/`tests/`/`Makefile` changes;
    Docker build fires on `Dockerfile`/`airsensor.c` changes)
-8. Tag a release (`git tag vX.Y.Z && git push --tags`) to trigger a versioned Docker Hub push
+9. Tag a release (`git tag vX.Y.Z && git push --tags`) to trigger a versioned Docker Hub push
 
 ---
 
