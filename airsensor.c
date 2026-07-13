@@ -79,7 +79,7 @@ static int query_device_data(libusb_device_handle *handle, const char *reqstr,
     build_data_command(data_seq, reqstr, cmd);
     data_seq = (data_seq < 0xFFFF) ? (unsigned short)(data_seq + 1) : 1;
 
-    int transferred;
+    int transferred = 0;
     int ret = libusb_interrupt_transfer(handle, 0x02, (unsigned char*)cmd, 16, &transferred, timeout_ms);
     if (ret != 0 || transferred != 16) return -1;
 
@@ -152,8 +152,8 @@ static void publish_discovery(MQTTClient client_handle,
                  cfg->ha_prefix, cfg->clientid);
 
     char payload[1536];
-    int pos = 0;
-    pos += snprintf(payload + pos, sizeof(payload) - pos,
+    size_t pos = 0;
+    if (append_format(payload, sizeof(payload), &pos,
                     "{\"name\":\"%s %s\","
                     "\"object_id\":\"%s%s\","
                     "\"state_topic\":\"%s\","
@@ -161,33 +161,41 @@ static void publish_discovery(MQTTClient client_handle,
                     "\"unit_of_measurement\":\"%s\",",
                     cfg->ha_device_name, ent->name,
                     cfg->clientid, ent->suffix ? ent->suffix + 1 : "",
-                    ent->state_topic, ent->value_tpl, ent->unit);
+                    ent->state_topic, ent->value_tpl, ent->unit) != 0)
+        goto payload_too_large;
 
     if (ent->device_class)
-        pos += snprintf(payload + pos, sizeof(payload) - pos,
-                        "\"device_class\":\"%s\",", ent->device_class);
+        if (append_format(payload, sizeof(payload), &pos,
+                          "\"device_class\":\"%s\",", ent->device_class) != 0)
+            goto payload_too_large;
     if (ent->state_class)
-        pos += snprintf(payload + pos, sizeof(payload) - pos,
-                        "\"state_class\":\"%s\",", ent->state_class);
+        if (append_format(payload, sizeof(payload), &pos,
+                          "\"state_class\":\"%s\",", ent->state_class) != 0)
+            goto payload_too_large;
     if (ent->entity_cat)
-        pos += snprintf(payload + pos, sizeof(payload) - pos,
-                        "\"entity_category\":\"%s\",", ent->entity_cat);
+        if (append_format(payload, sizeof(payload), &pos,
+                          "\"entity_category\":\"%s\",", ent->entity_cat) != 0)
+            goto payload_too_large;
     if (ent->icon)
-        pos += snprintf(payload + pos, sizeof(payload) - pos,
-                        "\"icon\":\"%s\",", ent->icon);
+        if (append_format(payload, sizeof(payload), &pos,
+                          "\"icon\":\"%s\",", ent->icon) != 0)
+            goto payload_too_large;
     if (ent->precision >= 0)
-        pos += snprintf(payload + pos, sizeof(payload) - pos,
-                        "\"suggested_display_precision\":%d,", ent->precision);
+        if (append_format(payload, sizeof(payload), &pos,
+                          "\"suggested_display_precision\":%d,", ent->precision) != 0)
+            goto payload_too_large;
     if (ent->expire_after >= 0)
-        pos += snprintf(payload + pos, sizeof(payload) - pos,
-                        "\"expire_after\":%d,", ent->expire_after);
+        if (append_format(payload, sizeof(payload), &pos,
+                          "\"expire_after\":%d,", ent->expire_after) != 0)
+            goto payload_too_large;
 
-    snprintf(payload + pos, sizeof(payload) - pos,
+    if (append_format(payload, sizeof(payload), &pos,
                     "\"unique_id\":\"%s%s\","
                     "\"availability_topic\":\"%s\","
                     "%s,%s}",
                     cfg->clientid, ent->suffix ? ent->suffix : "_voc",
-                    ent->avail_topic, device_block, origin_block);
+                    ent->avail_topic, device_block, origin_block) != 0)
+        goto payload_too_large;
 
     MQTTClient_message disc_msg = MQTTClient_message_initializer;
     MQTTClient_deliveryToken disc_token;
@@ -197,6 +205,11 @@ static void publish_discovery(MQTTClient client_handle,
     disc_msg.retained = 1;
     MQTTClient_publishMessage(client_handle, topic, &disc_msg, &disc_token);
     MQTTClient_waitForCompletion(client_handle, disc_token, TIMEOUT);
+    return;
+
+payload_too_large:
+    LOG_ERROR("Home Assistant discovery payload is too large for client '%s'",
+              cfg->clientid);
 }
 
 static int init_mqtt(const config_t *cfg, char *avail_topic, size_t avail_size) {
@@ -321,6 +334,57 @@ static libusb_device_handle* init_usb(int vendor, int product, int usb_timeout) 
     return handle;
 }
 
+static int reconnect_usb_device(libusb_device_handle **handle, int vendor,
+                                int product, int usb_timeout) {
+    libusb_release_interface(*handle, 0);
+    libusb_close(*handle);
+    *handle = NULL;
+
+    libusb_device_handle *new_handle = libusb_open_device_with_vid_pid(
+        NULL, (uint16_t)vendor, (uint16_t)product);
+    if (!new_handle) {
+        LOG_ERROR("Device not found on reconnect");
+        return -1;
+    }
+
+    if (libusb_kernel_driver_active(new_handle, 0) == 1)
+        libusb_detach_kernel_driver(new_handle, 0);
+
+    int ret = libusb_claim_interface(new_handle, 0);
+    if (ret != 0) {
+        LOG_ERROR("Claim failed on reconnect: %d", ret);
+        libusb_close(new_handle);
+        return -1;
+    }
+
+    unsigned char flush_buf[16];
+    int flush_transferred;
+    libusb_interrupt_transfer(new_handle, 0x81, flush_buf, sizeof(flush_buf),
+                              &flush_transferred, usb_timeout);
+
+    *handle = new_handle;
+    LOG_INFO("USB reconnect successful");
+    return 0;
+}
+
+static void record_usb_failure(const config_t *cfg, int vendor, int product,
+                               int *fail_count) {
+    (*fail_count)++;
+    LOG_DEBUG("USB failure, fail_count: %d", *fail_count);
+
+    if (!should_reconnect(*fail_count, cfg->max_retries))
+        return;
+
+    LOG_ERROR("Max retries reached, reconnecting USB");
+    if (reconnect_usb_device(&devh, vendor, product, cfg->usb_timeout) != 0) {
+        MQTTClient_disconnect(client, 10000);
+        MQTTClient_destroy(&client);
+        libusb_exit(NULL);
+        exit(EXIT_FAILURE);
+    }
+    *fail_count = 0;
+}
+
 static void query_device_info(libusb_device_handle *handle, int usb_timeout,
                               device_flags_t *flags, int *flags_valid,
                               device_knobs_t *knobs, int *knobs_valid) {
@@ -426,7 +490,7 @@ int main(int argc, char *argv[])
                       &dev_flags, &flags_valid, &dev_knobs, &knobs_valid);
 
     int ret;
-    int transferred;
+    int transferred = 0;
     MQTTClient_message pubmsg = MQTTClient_message_initializer;
     MQTTClient_deliveryToken token;
     int rc;
@@ -571,43 +635,14 @@ int main(int argc, char *argv[])
         char poll_cmd[16];
         build_poll_command(poll_seq, poll_cmd);
         poll_seq = next_poll_seq(poll_seq);
+        transferred = 0;
         ret = libusb_interrupt_transfer(devh, 0x02, (unsigned char*)poll_cmd, 16, &transferred, cfg.usb_timeout);
 
         LOG_DEBUG("Return code from USB write: %d (transferred: %d)", ret, transferred);
 
         if (ret != 0 || transferred != 16) {
-            fail_count++;
-            LOG_DEBUG("Write failed, fail_count: %d", fail_count);
-            if (fail_count >= cfg.max_retries) {
-                LOG_ERROR("Max retries reached, reconnecting USB");
-                libusb_release_interface(devh, 0);
-                libusb_close(devh);
-                fail_count = 0;
-                // Re-open device
-                devh = libusb_open_device_with_vid_pid(NULL, (uint16_t)vendor, (uint16_t)product);
-                if (!devh) {
-                    LOG_ERROR("Device not found on reconnect");
-                    MQTTClient_disconnect(client, 10000);
-                    MQTTClient_destroy(&client);
-                    libusb_exit(NULL);
-                    exit(1);
-                }
-                if (libusb_kernel_driver_active(devh, 0) == 1)
-                    libusb_detach_kernel_driver(devh, 0);
-                ret = libusb_claim_interface(devh, 0);
-                if (ret != 0) {
-                    LOG_ERROR("Claim failed on reconnect: %d", ret);
-                    libusb_close(devh);
-                    MQTTClient_disconnect(client, 10000);
-                    MQTTClient_destroy(&client);
-                    libusb_exit(NULL);
-                    exit(1);
-                }
-                LOG_INFO("USB reconnect successful");
-                unsigned char flush_buf[16];
-                int flush_transferred;
-                libusb_interrupt_transfer(devh, 0x81, flush_buf, 16, &flush_transferred, cfg.usb_timeout);
-            }
+            LOG_DEBUG("USB write failed: ret=%d, transferred=%d", ret, transferred);
+            record_usb_failure(&cfg, vendor, product, &fail_count);
             sleep(cfg.poll_interval);
             continue;
         }
@@ -617,35 +652,40 @@ int main(int argc, char *argv[])
         unsigned char fullbuf[48];
         memset(fullbuf, 0, 48);
 
+        transferred = 0;
         ret = libusb_interrupt_transfer(devh, 0x81, fullbuf, 16, &transferred, cfg.usb_timeout);
         LOG_DEBUG("Return code from USB read 1: %d (transferred: %d)", ret, transferred);
 
         if (ret == 0 && transferred == 0) {
             sleep(1);
+            transferred = 0;
             ret = libusb_interrupt_transfer(devh, 0x81, fullbuf, 16, &transferred, cfg.usb_timeout);
             LOG_DEBUG("Return code from USB read 1 (retry): %d (transferred: %d)", ret, transferred);
         }
 
+        int ret2 = -1;
+        int ret3 = -1;
+        int trans2 = 0;
+        int trans3 = 0;
         if (ret == 0 && transferred == 16) {
-            int trans2;
-            int ret2 = libusb_interrupt_transfer(devh, 0x81, fullbuf + 16, 16, &trans2, cfg.usb_timeout);
+            ret2 = libusb_interrupt_transfer(devh, 0x81, fullbuf + 16, 16, &trans2, cfg.usb_timeout);
             LOG_DEBUG("Return code from USB read 2: %d (transferred: %d)", ret2, trans2);
             if (ret2 == 0 && trans2 == 16) {
-                int trans3;
-                int ret3 = libusb_interrupt_transfer(devh, 0x81, fullbuf + 32, 16, &trans3, cfg.usb_timeout);
+                ret3 = libusb_interrupt_transfer(devh, 0x81, fullbuf + 32, 16, &trans3, cfg.usb_timeout);
                 LOG_DEBUG("Return code from USB read 3: %d (transferred: %d)", ret3, trans3);
             }
         }
 
-        if (ret != 0)
-        {
-            fail_count++;
-            LOG_DEBUG("Read failed, fail_count: %d", fail_count);
+        if (!usb_poll_response_complete(ret, transferred, ret2, trans2,
+                                        ret3, trans3)) {
+            LOG_DEBUG("Incomplete USB response: chunks=(%d/%d, %d/%d, %d/%d)",
+                      ret, transferred, ret2, trans2, ret3, trans3);
             if (cfg.print_voc_only == 1) {
                 printf("0\n");
             } else {
-                LOG_ERROR("Invalid result code: %d", ret);
+                LOG_ERROR("Incomplete USB response");
             }
+            record_usb_failure(&cfg, vendor, product, &fail_count);
             sleep(cfg.poll_interval);
             continue;
         }

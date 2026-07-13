@@ -12,6 +12,7 @@
 #define AIRSENSOR_H
 
 #include <stddef.h>
+#include <stdarg.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -101,6 +102,51 @@ static inline void config_init_from_env(config_t *cfg) {
 
 static inline int voc_in_range(unsigned short voc) {
     return (voc >= 450 && voc <= 15001);
+}
+
+/* --------------------------------------------------------------------------
+ * Bounded buffer construction
+ * -------------------------------------------------------------------------- */
+
+/*
+ * Append formatted data to buf without allowing the write position to move
+ * past the end of the buffer. Returns 0 on success and -1 on truncation or
+ * invalid input. Once an append fails, callers must stop building the value.
+ */
+static inline int append_format(char *buf, size_t buf_size, size_t *pos,
+                                const char *fmt, ...) {
+    if (!buf || !pos || !fmt || buf_size == 0 || *pos >= buf_size)
+        return -1;
+
+    va_list args;
+    va_start(args, fmt);
+    int written = vsnprintf(buf + *pos, buf_size - *pos, fmt, args);
+    va_end(args);
+
+    if (written < 0 || (size_t)written >= buf_size - *pos) {
+        buf[buf_size - 1] = '\0';
+        *pos = buf_size;
+        return -1;
+    }
+
+    *pos += (size_t)written;
+    return 0;
+}
+
+/* --------------------------------------------------------------------------
+ * USB retry/response validation
+ * -------------------------------------------------------------------------- */
+
+static inline int should_reconnect(int fail_count, int max_retries) {
+    return fail_count >= max_retries;
+}
+
+static inline int usb_poll_response_complete(int ret1, int transferred1,
+                                             int ret2, int transferred2,
+                                             int ret3, int transferred3) {
+    return ret1 == 0 && transferred1 == 16 &&
+           ret2 == 0 && transferred2 == 16 &&
+           ret3 == 0 && transferred3 == 16;
 }
 
 /* --------------------------------------------------------------------------
