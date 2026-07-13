@@ -640,14 +640,6 @@ static void suite_env_parsing(void) {
 
 /* --- Retry / reconnect logic --------------------------------------------- */
 
-/*
- * Returns 1 if we should attempt a reconnect (fail_count >= max_retries).
- * Returns 0 if we should just retry.
- */
-static int should_reconnect(int fail_count, int max_retries) {
-    return (fail_count >= max_retries) ? 1 : 0;
-}
-
 static void suite_retry_logic(void) {
     print_header("Retry / reconnect decision logic");
 
@@ -660,6 +652,59 @@ static void suite_retry_logic(void) {
     TEST("fail=0, max=1 → retry",     should_reconnect(0, 1) == 0);
     TEST("fail=19, max=20 → retry",   should_reconnect(19, 20) == 0);
     TEST("fail=20, max=20 → reconnect", should_reconnect(20, 20) == 1);
+}
+
+/* --- Complete USB response validation ----------------------------------- */
+
+static void suite_usb_response_validation(void) {
+    print_header("Complete USB response validation");
+
+    TEST("three complete chunks are accepted",
+         usb_poll_response_complete(0, 16, 0, 16, 0, 16) == 1);
+    TEST("short first chunk is rejected",
+         usb_poll_response_complete(0, 15, 0, 16, 0, 16) == 0);
+    TEST("empty first chunk is rejected",
+         usb_poll_response_complete(0, 0, 0, 16, 0, 16) == 0);
+    TEST("failed first chunk is rejected",
+         usb_poll_response_complete(-7, 0, 0, 16, 0, 16) == 0);
+    TEST("short second chunk is rejected",
+         usb_poll_response_complete(0, 16, 0, 8, 0, 16) == 0);
+    TEST("failed second chunk is rejected",
+         usb_poll_response_complete(0, 16, -7, 0, 0, 16) == 0);
+    TEST("short third chunk is rejected",
+         usb_poll_response_complete(0, 16, 0, 16, 0, 12) == 0);
+    TEST("failed third chunk is rejected",
+         usb_poll_response_complete(0, 16, 0, 16, -7, 0) == 0);
+}
+
+/* --- Bounded formatted appends ------------------------------------------ */
+
+static void suite_bounded_append(void) {
+    print_header("Bounded formatted appends");
+
+    char buf[16];
+    size_t pos = 0;
+    TEST("first append succeeds",
+         append_format(buf, sizeof(buf), &pos, "%s", "hello") == 0);
+    TEST("second append succeeds",
+         append_format(buf, sizeof(buf), &pos, " %s", "world") == 0);
+    TEST("successful appends produce expected text",
+         strcmp(buf, "hello world") == 0);
+    TEST("position tracks bytes written", pos == strlen("hello world"));
+
+    TEST("oversized append is rejected",
+         append_format(buf, sizeof(buf), &pos, "%s", "0123456789") == -1);
+    TEST("failed append leaves buffer terminated", buf[sizeof(buf) - 1] == '\0');
+    TEST("position is sealed after truncation", pos == sizeof(buf));
+    TEST("append after truncation remains rejected",
+         append_format(buf, sizeof(buf), &pos, "%s", "x") == -1);
+
+    pos = 0;
+    TEST("exact fit including terminator succeeds",
+         append_format(buf, sizeof(buf), &pos, "%s", "123456789012345") == 0);
+    TEST("exact fit position excludes terminator", pos == sizeof(buf) - 1);
+    TEST("no remaining space is rejected",
+         append_format(buf, sizeof(buf), &pos, "%s", "x") == -1);
 }
 
 /* --- Data command building (FLAGGET?, KNOBPRE?) -------------------------- */
@@ -914,6 +959,8 @@ int main(void) {
     suite_poll_command();
     suite_env_parsing();
     suite_retry_logic();
+    suite_usb_response_validation();
+    suite_bounded_append();
     suite_data_command();
     suite_flagget_parsing();
     suite_knobpre_parsing();
